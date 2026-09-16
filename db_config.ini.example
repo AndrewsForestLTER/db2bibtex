@@ -1,0 +1,9 @@
+[Database]
+server = your.server.name.here
+database = your_database_here
+username = your_username_here
+password = your_password_here
+trustservercertificate = yes/no
+
+[Driver]
+driver = {your sql driver details go here}

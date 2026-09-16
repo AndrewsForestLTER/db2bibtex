@@ -1,0 +1,17 @@
+{
+  "title": "db2bibtex: export HJA/LTER publications from SQL Server to BibTeX for Zotero",
+  "upload_type": "software",
+  "license": "MIT",
+  "creators": [
+    {
+      "name": "Kennedy, Adam",
+      "affiliation": "H.J. Andrews Experimental Forest, Oregon State University",
+      "orcid": "0000-0002-0491-8412"
+    }
+  ],
+  "keywords": ["BibTeX", "Zotero", "SQL Server", "bibliography", "LTER", "data management"],
+  "access_right": "open",
+  "grants": [{ "id": "10.13039/100000001::2025755" }],
+  "description": "Exports Published H.J. Andrews Experimental Forest / LTER publications from a SQL Server database to BibTeX for import into Zotero.",
+  "notes": "This material is based upon work supported by the H.J. Andrews Experimental Forest and Long Term Ecological Research (LTER) program under the NSF grant LTER8 DEB-2025755."
+}

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "db2bibtex"
+version = "1.0.0"
+description = "Export Published H.J. Andrews Experimental Forest / LTER publications from SQL Server to BibTeX for Zotero import"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Adam Kennedy", email = "adam.kennedy@oregonstate.edu" }]
+requires-python = ">=3.9"
+dependencies = ["pyodbc"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+db2bibtex = "db2bibtex.cli:main"
+
+[project.gui-scripts]
+db2bibtex-gui = "db2bibtex.gui:main"
+
+[project.urls]
+Repository = "https://github.com/andrewsforestlter/db2bibtex"
+
+[tool.setuptools.packages.find]
+where = ["src"]

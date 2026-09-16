@@ -1,0 +1,76 @@
+-- ============================================================
+-- query.sql.example
+--
+-- Template showing the query shape this tool expects. Copy this
+-- file to query.sql and adapt the table/column names and filter
+-- values to your own database schema. query.sql is gitignored
+-- and never committed -- it's expected to contain your real,
+-- institution-specific schema details.
+--
+-- The tool executes this query with ONE parameter (`?`), bound
+-- to the --before-year value, matched against a numeric year
+-- column that may need casting from text.
+-- ============================================================
+
+SELECT
+    pub.[id_column]              AS publication_id,
+    pub.[category_id_column]     AS catalog_id,
+    pub.[external_number_column] AS pub_number,
+    pub.[status_column]          AS pub_status,
+    pub.[type_column]            AS pub_type,
+    pub.[reference_type_column]  AS reference_type,
+    pub.[author_column]          AS author,
+    pub.[year_column]            AS pub_year,
+    pub.[title_column]           AS title,
+    pub.[secondary_author_column] AS secondary_author,
+    pub.[secondary_title_column] AS secondary_title,
+    pub.[place_published_column] AS place_published,
+    pub.[publisher_column]       AS publisher,
+    pub.[volume_column]          AS volume,
+    pub.[extent_column]          AS extent,
+    pub.[issue_column]           AS issue,
+    pub.[number_of_pages_column] AS number_of_pages,
+    pub.[pages_column]           AS pages,
+    pub.[doi_column]             AS doi,
+    pub.[news_section_column]    AS news_section,
+    pub.[tertiary_author_column] AS tertiary_author,
+    pub.[tertiary_title_column]  AS tertiary_title,
+    pub.[edition_column]         AS edition,
+    pub.[meeting_date_column]    AS meeting_date,
+    pub.[type_of_work_column]    AS type_of_work,
+    pub.[subsidiary_author_column] AS subsidiary_author,
+    pub.[isbn_issn_column]       AS isbn_issn,
+    pub.[author_role_column]     AS author_role,
+    pub.[availability_column]    AS availability,
+    pub.[meeting_place_column]   AS meeting_place,
+    pub.[notes_column]           AS notes,
+    pub.[online_linkage_column]  AS online_linkage,
+    pub.[online_pdf_column]      AS online_pdf,
+    pub.[pdf_flag_column]        AS pdf,
+    pub.[abstract_column]        AS abstract,
+    pub.[citation_column]        AS citation,
+    pub.[last_update_column]     AS last_update
+FROM [your_database].[schema].[publications_table] pub
+-- Optional: join to a category/type lookup table if your schema
+-- separates "what kind of catalog record is this" from the
+-- publication details themselves (e.g. distinguishing
+-- publications from datasets, images, software, etc. in a
+-- shared catalog table).
+INNER JOIN [your_database].[schema].[catalog_table] cat
+    ON pub.[category_id_column] = cat.[category_id_column]
+INNER JOIN [your_database].[schema].[catalog_type_table] cat_type
+    ON cat.[type_id_column] = cat_type.[type_id_column]
+WHERE cat_type.[type_description_column] = 'Publication'
+  AND pub.[status_column] = 'Published'
+  AND pub.[type_column] <> 'Abstract'
+  AND TRY_CAST(pub.[year_column] AS INT) < ?   -- bound to --before-year
+  -- Optional: restrict to specific project/program scope(s) if your
+  -- catalog is shared across multiple projects and you only want a
+  -- subset (e.g. records tagged to your program's project ID(s) in
+  -- a many-to-many catalog/project linking table).
+  AND pub.[category_id_column] IN (
+        SELECT DISTINCT link.[category_id_column]
+        FROM [your_database].[schema].[catalog_project_link_table] link
+        WHERE link.[project_id_column] IN (/* your project ID(s) here */)
+      )
+ORDER BY pub.[year_column] ASC, pub.[author_column] ASC

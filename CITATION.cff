@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "db2bibtex: Export HJA/LTER publications from SQL Server to BibTeX for Zotero"
+version: 1.0.0
+date-released: "2026-09-16"
+license: MIT
+repository-code: "https://github.com/andrewsforestlter/db2bibtex"
+authors:
+  - family-names: Kennedy
+    given-names: Adam
+    orcid: "https://orcid.org/0000-0002-0491-8412"
+    affiliation: "H.J. Andrews Experimental Forest, Oregon State University"

@@ -1,0 +1,12 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+db_config.ini
+query.sql
+SCHEMA_NOTES.md
+*.bib
