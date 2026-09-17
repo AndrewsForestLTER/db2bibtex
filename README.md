@@ -1,6 +1,6 @@
 # db2bibtex
 
-<!-- [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX) -->
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22800301.svg)](https://doi.org/10.5281/zenodo.22800301)
 
 Export Published H.J. Andrews Experimental Forest / LTER publications from a
 SQL Server database to a BibTeX (`.bib`) file for import into
@@ -106,6 +106,9 @@ db2bibtex-gui
 python -m db2bibtex
 ```
 
+The window has two tabs: **Export** (described above) and **Compare** (see
+below).
+
 Fill in Server, Database, and Query file (or **File → Load Config...** for
 Server/Database), check **Use Windows trusted connection** to skip
 username/password, pick a before-year and output path, and click
@@ -124,6 +127,47 @@ Zotero will:
   tag in the tag selector
 - Use the `AND<pub_number>` citation key group as-is (no cite-key collision
   handling needed on Zotero's side, since `db2bibtex` already de-duplicates)
+
+## Comparing against your Zotero library
+
+A fresh `db2bibtex` export from the database always contains every
+in-scope publication, including ones you've already imported into Zotero
+in a previous round. Re-importing the whole file risks creating duplicate
+items. The **compare** feature reconciles a new database export against
+your current Zotero library and produces a `.bib` file containing only the
+entries you haven't imported yet.
+
+First, export your current Zotero library to BibTeX: in Zotero, **File →
+Export Library...** → format **BibTeX** → save it somewhere (e.g.
+`zotero_library.bib`).
+
+Matching is done by `publication_id`, extracted from each entry's `note`
+field (`Source DB: publication_id X; pub_number Y; catalog_id Z`) — not by
+citation key or the `keywords` tag. Citation key format and the
+`keywords` tag were both added partway through this project's history, so
+a real Zotero library can contain items imported under several different
+historical exporter versions. The `note` field's `publication_id` is the
+one identifier every exporter version has always written, making it the
+only reliable join key across that mix.
+
+CLI usage:
+
+```bash
+db2bibtex-compare --backup publications_before_2026.bib --library zotero_library.bib --output missing.bib
+```
+
+`--output` defaults to `missing_from_library.bib` if omitted. The command
+prints how many entries were found in each file and how many are missing,
+and warns (to stderr) about any backup entries it couldn't match to a
+`publication_id`.
+
+The GUI's **Compare** tab offers the same fields (Backup file, Library
+export file, Output file) and a **Run Comparison** button, running the
+comparison on a background thread with the same log/error handling as the
+Export tab.
+
+Either way, `missing.bib` still needs to be imported into Zotero yourself
+(**File → Import...**) — this tool does not write to Zotero directly.
 
 ## Tests
 

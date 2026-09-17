@@ -9,6 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from db2bibtex import __version__
+from db2bibtex.compare import find_missing, write_missing
 from db2bibtex.exporter import (
     DEFAULT_DRIVER,
     PyodbcMissingError,
@@ -39,6 +40,9 @@ class App(tk.Tk):
         self._log_queue: "queue.Queue[str]" = queue.Queue()
         self._worker_thread: threading.Thread | None = None
 
+        self._compare_log_queue: "queue.Queue[str]" = queue.Queue()
+        self._compare_worker_thread: threading.Thread | None = None
+
         self.server_var = tk.StringVar()
         self.database_var = tk.StringVar()
         self.driver_var = tk.StringVar(value=DEFAULT_DRIVER)
@@ -50,11 +54,34 @@ class App(tk.Tk):
         self.before_year_var = tk.IntVar(value=1980)
         self.output_var = tk.StringVar(value="publications_before_1980.bib")
 
+        self.backup_var = tk.StringVar()
+        self.library_var = tk.StringVar()
+        self.compare_output_var = tk.StringVar(value="missing_from_library.bib")
+
         self._build_menu()
-        self._build_form()
-        self._build_log_pane()
+
+        self.notebook = ttk.Notebook(self)
+        self.notebook.grid(row=0, column=0, sticky="nsew")
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        self.export_tab = ttk.Frame(self.notebook)
+        self.export_tab.columnconfigure(0, weight=1)
+        self.export_tab.rowconfigure(1, weight=1)
+        self.notebook.add(self.export_tab, text="Export")
+
+        self.compare_tab = ttk.Frame(self.notebook)
+        self.compare_tab.columnconfigure(0, weight=1)
+        self.compare_tab.rowconfigure(1, weight=1)
+        self.notebook.add(self.compare_tab, text="Compare")
+
+        self._build_export_form()
+        self._build_export_log_pane()
+        self._build_compare_form()
+        self._build_compare_log_pane()
 
         self.after(100, self._poll_queue)
+        self.after(100, self._poll_compare_queue)
 
     # ------------------------------------------------------------------
     # Construction
@@ -75,8 +102,8 @@ class App(tk.Tk):
 
         self.config(menu=menubar)
 
-    def _build_form(self) -> None:
-        frame = ttk.Frame(self, padding=10)
+    def _build_export_form(self) -> None:
+        frame = ttk.Frame(self.export_tab, padding=10)
         frame.grid(row=0, column=0, sticky="nsew")
 
         row = 0
@@ -150,11 +177,9 @@ class App(tk.Tk):
 
         self.on_trusted_toggle()
 
-    def _build_log_pane(self) -> None:
-        log_frame = ttk.Frame(self, padding=(10, 0, 10, 10))
+    def _build_export_log_pane(self) -> None:
+        log_frame = ttk.Frame(self.export_tab, padding=(10, 0, 10, 10))
         log_frame.grid(row=1, column=0, sticky="nsew")
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
 
         self.log_text = tk.Text(log_frame, height=10, state="disabled", wrap="word")
         scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
@@ -162,8 +187,63 @@ class App(tk.Tk):
         self.log_text.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+    def _build_compare_form(self) -> None:
+        frame = ttk.Frame(self.compare_tab, padding=10)
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        row = 0
+        ttk.Label(frame, text="Backup file").grid(row=row, column=0, sticky="w")
+        backup_frame = ttk.Frame(frame)
+        backup_frame.grid(row=row, column=1, sticky="ew")
+        ttk.Entry(backup_frame, textvariable=self.backup_var, width=32).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(backup_frame, text="Browse...", command=self.on_browse_backup).pack(side="left")
+        row += 1
+
+        ttk.Label(frame, text="Library export file").grid(row=row, column=0, sticky="w")
+        library_frame = ttk.Frame(frame)
+        library_frame.grid(row=row, column=1, sticky="ew")
+        ttk.Entry(library_frame, textvariable=self.library_var, width=32).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(library_frame, text="Browse...", command=self.on_browse_library).pack(side="left")
+        row += 1
+
+        ttk.Label(frame, text="Output file").grid(row=row, column=0, sticky="w")
+        compare_out_frame = ttk.Frame(frame)
+        compare_out_frame.grid(row=row, column=1, sticky="ew")
+        ttk.Entry(compare_out_frame, textvariable=self.compare_output_var, width=32).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(
+            compare_out_frame, text="Browse...", command=self.on_browse_compare_output
+        ).pack(side="left")
+        row += 1
+
+        self.compare_run_button = ttk.Button(
+            frame, text="Run Comparison", command=self.on_run_compare
+        )
+        self.compare_run_button.grid(row=row, column=0, columnspan=2, pady=(10, 0))
+        row += 1
+
+        self.compare_progress = ttk.Progressbar(frame, mode="indeterminate")
+        self.compare_progress.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+
+        frame.columnconfigure(1, weight=1)
+
+    def _build_compare_log_pane(self) -> None:
+        log_frame = ttk.Frame(self.compare_tab, padding=(10, 0, 10, 10))
+        log_frame.grid(row=1, column=0, sticky="nsew")
+
+        self.compare_log_text = tk.Text(log_frame, height=10, state="disabled", wrap="word")
+        scrollbar = ttk.Scrollbar(log_frame, command=self.compare_log_text.yview)
+        self.compare_log_text.configure(yscrollcommand=scrollbar.set)
+        self.compare_log_text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
     # ------------------------------------------------------------------
-    # Interactive logic
+    # Interactive logic -- Export tab
     # ------------------------------------------------------------------
     def on_trusted_toggle(self) -> None:
         """Enable/disable username+password fields based on trusted-connection state."""
@@ -331,6 +411,113 @@ class App(tk.Tk):
         self.log_text.insert("end", msg + "\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    # ------------------------------------------------------------------
+    # Interactive logic -- Compare tab
+    # ------------------------------------------------------------------
+    def on_browse_backup(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[("BibTeX files", "*.bib"), ("All files", "*.*")],
+            initialfile=self.backup_var.get(),
+        )
+        if path:
+            self.backup_var.set(path)
+
+    def on_browse_library(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[("BibTeX files", "*.bib"), ("All files", "*.*")],
+            initialfile=self.library_var.get(),
+        )
+        if path:
+            self.library_var.set(path)
+
+    def on_browse_compare_output(self) -> None:
+        path = filedialog.asksaveasfilename(
+            defaultextension=".bib",
+            filetypes=[("BibTeX files", "*.bib"), ("All files", "*.*")],
+            initialfile=self.compare_output_var.get(),
+        )
+        if path:
+            self.compare_output_var.set(path)
+
+    def on_run_compare(self) -> None:
+        """Validate inputs and launch the comparison on a background thread."""
+        backup = self.backup_var.get().strip()
+        if not backup:
+            messagebox.showerror("Missing Backup File", "Please choose a database backup .bib file.")
+            return
+
+        library = self.library_var.get().strip()
+        if not library:
+            messagebox.showerror(
+                "Missing Library File", "Please choose a Zotero library export .bib file."
+            )
+            return
+
+        if self._compare_worker_thread and self._compare_worker_thread.is_alive():
+            messagebox.showwarning("Comparison Running", "A comparison is already in progress.")
+            return
+
+        output = self.compare_output_var.get().strip() or "missing_from_library.bib"
+
+        self.compare_run_button.configure(state="disabled")
+        self.compare_progress.start(10)
+        self._compare_worker_thread = threading.Thread(
+            target=self._run_compare_worker,
+            kwargs=dict(backup=backup, library=library, output=output),
+            daemon=True,
+        )
+        self._compare_worker_thread.start()
+
+    def _run_compare_worker(self, backup: str, library: str, output: str) -> None:
+        """Runs in a background thread: performs the comparison, logs via the queue."""
+        try:
+            missing_ids, backup_ids, library_ids, backup_unparsed = find_missing(backup, library)
+            write_missing(missing_ids, backup_ids, output, backup, library)
+            self._compare_log_queue.put(
+                f"Backup: {len(backup_ids)} entries with a parseable publication_id "
+                f"({len(backup_unparsed)} without)"
+            )
+            self._compare_log_queue.put(
+                f"Library: {len(library_ids)} entries with a parseable publication_id"
+            )
+            self._compare_log_queue.put(
+                f"Missing from library: {len(missing_ids)} entries -> wrote {output}"
+            )
+            if backup_unparsed:
+                self._compare_log_queue.put(
+                    f"WARNING: {len(backup_unparsed)} backup entries had no parseable "
+                    "publication_id and were skipped (not counted, not written)"
+                )
+            self._compare_log_queue.put(f"DONE: wrote {output}")
+        except FileNotFoundError as exc:
+            self._compare_log_queue.put(f"ERROR: {exc}")
+        except Exception as exc:  # noqa: BLE001 -- surfaced to the user, not swallowed
+            self._compare_log_queue.put(f"ERROR: comparison failed: {exc}")
+        finally:
+            self._compare_log_queue.put("__COMPARE_FINISHED__")
+
+    def _poll_compare_queue(self) -> None:
+        """Drain the compare log queue into the compare log pane; reschedules via after()."""
+        try:
+            while True:
+                msg = self._compare_log_queue.get_nowait()
+                if msg == "__COMPARE_FINISHED__":
+                    self.compare_run_button.configure(state="normal")
+                    self.compare_progress.stop()
+                    continue
+                self._append_compare_log(msg)
+                if msg.startswith("ERROR:"):
+                    messagebox.showerror("Comparison Failed", msg[len("ERROR: ") :])
+        except queue.Empty:
+            pass
+        self.after(100, self._poll_compare_queue)
+
+    def _append_compare_log(self, msg: str) -> None:
+        self.compare_log_text.configure(state="normal")
+        self.compare_log_text.insert("end", msg + "\n")
+        self.compare_log_text.see("end")
+        self.compare_log_text.configure(state="disabled")
 
 
 def main() -> None:

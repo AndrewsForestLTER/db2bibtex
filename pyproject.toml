@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "db2bibtex"
-version = "1.0.1"
+version = "1.1.0"
 description = "Export Published H.J. Andrews Experimental Forest / LTER publications from SQL Server to BibTeX for Zotero import"
 readme = "README.md"
 license = { text = "MIT" }
@@ -17,6 +17,7 @@ dev = ["pytest"]
 
 [project.scripts]
 db2bibtex = "db2bibtex.cli:main"
+db2bibtex-compare = "db2bibtex.compare_cli:main"
 
 [project.gui-scripts]
 db2bibtex-gui = "db2bibtex.gui:main"

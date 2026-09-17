@@ -240,3 +240,101 @@ def test_run_export_missing_query_file_shows_friendly_error(app, tmp_path):
     # traceback and not "export failed: ..." noise wrapped around it.
     assert any(msg == f"ERROR: {friendly_message}" for msg in drained)
     assert not any("Traceback" in msg for msg in drained)
+
+
+def test_notebook_has_export_and_compare_tabs(app):
+    tab_texts = [app.notebook.tab(tab_id, "text") for tab_id in app.notebook.tabs()]
+    assert tab_texts == ["Export", "Compare"]
+
+
+def test_browse_backup_sets_field(app, tmp_path):
+    picked = tmp_path / "backup.bib"
+    with patch.object(gui_module.filedialog, "askopenfilename", return_value=str(picked)):
+        app.on_browse_backup()
+    assert app.backup_var.get() == str(picked)
+
+
+def test_browse_library_sets_field(app, tmp_path):
+    picked = tmp_path / "library.bib"
+    with patch.object(gui_module.filedialog, "askopenfilename", return_value=str(picked)):
+        app.on_browse_library()
+    assert app.library_var.get() == str(picked)
+
+
+def test_browse_compare_output_sets_field(app, tmp_path):
+    picked = tmp_path / "missing.bib"
+    with patch.object(gui_module.filedialog, "asksaveasfilename", return_value=str(picked)):
+        app.on_browse_compare_output()
+    assert app.compare_output_var.get() == str(picked)
+
+
+def test_run_compare_missing_backup_shows_messagebox(app):
+    app.backup_var.set("")
+    app.library_var.set("somelibrary.bib")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_compare()
+    mock_showerror.assert_called_once()
+    assert app._compare_worker_thread is None
+
+
+def test_run_compare_missing_library_shows_messagebox(app, tmp_path):
+    app.backup_var.set(str(tmp_path / "backup.bib"))
+    app.library_var.set("")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_compare()
+    mock_showerror.assert_called_once()
+    assert app._compare_worker_thread is None
+
+
+def test_run_compare_success_path(app, tmp_path):
+    backup_path = tmp_path / "backup.bib"
+    library_path = tmp_path / "library.bib"
+    output_path = tmp_path / "missing.bib"
+    backup_path.write_text(
+        "@article{AND100,\n  note = {Source DB: publication_id 100; pub_number 100; catalog_id 1},\n}\n",
+        encoding="utf-8",
+    )
+    library_path.write_text("", encoding="utf-8")
+
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.backup_var.set(str(backup_path))
+        app.library_var.set(str(library_path))
+        app.compare_output_var.set(str(output_path))
+        app.on_run_compare()
+
+        assert app._compare_worker_thread is not None
+        app._compare_worker_thread.join(timeout=5)
+        assert not app._compare_worker_thread.is_alive()
+
+        app.update_idletasks()
+        drained = []
+        while True:
+            try:
+                drained.append(app._compare_log_queue.get_nowait())
+            except Exception:
+                break
+
+    mock_showerror.assert_not_called()
+    assert output_path.exists()
+    assert any("Missing from library: 1 entries" in m for m in drained)
+
+
+def test_run_compare_error_path_shows_messagebox(app, tmp_path):
+    app.backup_var.set(str(tmp_path / "does_not_exist_backup.bib"))
+    app.library_var.set(str(tmp_path / "does_not_exist_library.bib"))
+    app.compare_output_var.set(str(tmp_path / "missing.bib"))
+
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_compare()
+
+        assert app._compare_worker_thread is not None
+        app._compare_worker_thread.join(timeout=5)
+
+        drained = []
+        while True:
+            try:
+                drained.append(app._compare_log_queue.get_nowait())
+            except Exception:
+                break
+
+    assert any(msg.startswith("ERROR:") for msg in drained)
