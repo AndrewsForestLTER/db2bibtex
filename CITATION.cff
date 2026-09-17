@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "db2bibtex: export HJA/LTER publications from SQL Server to BibTeX for Zotero"
 type: software
-version: 1.0.0
+version: 1.0.1
 date-released: "2026-09-16"
 license: MIT
 repository-code: "https://github.com/AndrewsForestLTER/db2bibtex"
