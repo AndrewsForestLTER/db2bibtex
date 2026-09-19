@@ -191,6 +191,7 @@ def test_build_bibtex_entry_and2135(and2135_row):
     assert entry.startswith("@incollection{AND2135,")
     assert "author = {Cromack, K., Jr. and Delwiche, C. C. and McNabb, D. H.}" in entry
     assert "pdf = {http://andrewsforest.oregonstate.edu/pubs/pdf/pub2135.pdf}" in entry
+    assert "url = {https://andrewsforest.oregonstate.edu/publications/2135}" in entry
     assert r"keywords = {pub\_number:2135}" in entry
     assert "year = {1979}" in entry
     assert r"publication\_id 2075" in entry
@@ -204,12 +205,73 @@ def test_build_bibtex_entry_skips_empty_fields(and2135_row):
     assert "volume = " not in entry
 
 
-def test_build_bibtex_entry_url_and_pdf_separate(and2135_row):
+def test_build_bibtex_entry_url_is_detail_page_when_pdf_exists(and2135_row):
     row = dict(and2135_row)
     row["online_linkage"] = "https://example.org/landing"
     entry = exporter.build_bibtex_entry(row, used_keys=set())
-    assert "url = {https://example.org/landing}" in entry
     assert "pdf = {http://andrewsforest.oregonstate.edu/pubs/pdf/pub2135.pdf}" in entry
+    assert "url = {https://andrewsforest.oregonstate.edu/publications/2135}" in entry
+    assert "url = {https://example.org/landing}" not in entry
+    assert "url = {http://andrewsforest.oregonstate.edu/pubs/pdf/pub2135.pdf}" not in entry
+
+
+def test_build_bibtex_entry_url_falls_back_to_online_linkage(and2135_row):
+    row = dict(and2135_row)
+    row["online_pdf"] = None
+    row["online_linkage"] = "https://example.org/landing"
+    entry = exporter.build_bibtex_entry(row, used_keys=set())
+    assert "url = {https://example.org/landing}" in entry
+    assert "pdf = " not in entry
+
+
+def test_build_bibtex_entry_pdf_flag_derives_pdf_and_detail_page_url(and2135_row):
+    row = dict(and2135_row)
+    row["online_pdf"] = None
+    row["pdf"] = "T"
+    entry = exporter.build_bibtex_entry(row, used_keys=set())
+    assert "pdf = {https://andrewsforest.oregonstate.edu/pubs/pdf/pub2135.pdf}" in entry
+    assert "url = {https://andrewsforest.oregonstate.edu/publications/2135}" in entry
+
+
+def test_build_bibtex_entry_pdf_flag_false_no_link(and2135_row):
+    row = dict(and2135_row)
+    row["online_pdf"] = None
+    row["pdf"] = "F"
+    entry = exporter.build_bibtex_entry(row, used_keys=set())
+    assert "pdf = " not in entry
+    assert "url = " not in entry
+
+
+def test_build_bibtex_entry_url_falls_back_when_pdf_exists_but_no_pub_number():
+    row = {
+        "publication_id": 1,
+        "catalog_id": 1,
+        "pub_number": None,
+        "reference_type": "Journal Article",
+        "pub_type": "Journal Article",
+        "author": "Doe, Jane",
+        "pub_year": "2020",
+        "title": "A title",
+        "secondary_author": None,
+        "secondary_title": None,
+        "place_published": None,
+        "publisher": None,
+        "volume": None,
+        "issue": None,
+        "pages": None,
+        "doi": None,
+        "type_of_work": None,
+        "isbn_issn": None,
+        "notes": None,
+        "online_linkage": "https://example.org/landing",
+        "online_pdf": "http://andrewsforest.oregonstate.edu/pubs/pdf/pubUnknown.pdf",
+        "pdf": None,
+        "abstract": None,
+    }
+    entry = exporter.build_bibtex_entry(row, used_keys=set())
+    assert "pdf = {http://andrewsforest.oregonstate.edu/pubs/pdf/pubUnknown.pdf}" in entry
+    assert "url = {https://example.org/landing}" in entry
+    assert "andrewsforest.oregonstate.edu/publications/" not in entry
 
 
 def test_build_bibtex_entry_citation_key_collision(and2135_row):

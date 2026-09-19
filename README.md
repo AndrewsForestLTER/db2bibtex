@@ -18,8 +18,15 @@ file with:
   proper `and`-joined BibTeX author lists
 - Citation keys following the production Andrews Forest convention
   (`AND<pub_number>`, e.g. `AND2135`)
-- `online_pdf` written to a `pdf` field (Zotero auto-attaches it as a
-  downloadable PDF) and `online_linkage` written to a separate `url` field
+- PDF link resolved from `online_pdf` when populated, else derived from
+  `pub_number` when the `pdf` flag column is set (same convention as the
+  Andrews Forest Drupal publications page); written to a `pdf` field
+  (Zotero auto-attaches it as a downloadable PDF)
+- `url` field points at the publications detail page
+  (`andrewsforest.oregonstate.edu/publications/<pub_number>`) whenever a
+  PDF link was resolved, so the item's clickable URL opens the catalog
+  record rather than a raw PDF; falls back to `online_linkage` only when
+  no PDF link could be resolved
 - `pub_number` also written to a `keywords` field so Zotero's BibTeX import
   turns it into a searchable tag (e.g. `pub_number:2135`)
 - `reference_type`/`pub_type` mapped to a BibTeX entry type (article, book,

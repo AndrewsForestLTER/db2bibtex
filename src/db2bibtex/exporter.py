@@ -21,10 +21,21 @@ Notes on design decisions:
     - reference_type/pub_type is mapped to a BibTeX entry type. Add or edit
       ENTRY_TYPE_MAP below if reference_type values differ from what's
       guessed here.
-    - online_pdf is written to the `pdf` field. Zotero's built-in BibTeX
+    - PDF link resolution: online_pdf (a stored URL) is used verbatim when
+      present; otherwise, if the pdf flag column is 'T'/true, a URL is
+      derived from pub_number using the same convention the Andrews
+      Forest Drupal publications page uses
+      (https://andrewsforest.oregonstate.edu/pubs/pdf/pub<pub_number>.pdf)
+      -- that flag is frequently set even when online_pdf itself is empty.
+      The result is written to the `pdf` field (Zotero's built-in BibTeX
       import translator auto-attaches this as a downloadable PDF link
-      whenever the value contains "://". online_linkage goes to `url`
-      instead so the two source columns stay distinguishable on import.
+      whenever the value contains "://").
+    - `url` is deliberately NOT the same as `pdf`: whenever a PDF link was
+      resolved, url points at the publications detail page instead
+      (https://andrewsforest.oregonstate.edu/publications/<pub_number>),
+      so the item's clickable URL in Zotero opens the catalog record, not
+      a raw PDF download. online_linkage is used for url only when no PDF
+      link could be resolved at all.
     - author / secondary_author are delimited with '//' in the source data.
       ';' and newline are kept as fallback delimiters.
     - Citation keys use the production convention: 'AND' + pub_number
@@ -106,6 +117,8 @@ BIBTEX_SPECIAL_CHARS = {
 }
 
 DEFAULT_DRIVER = "ODBC Driver 18 for SQL Server"
+
+ANDREWS_FOREST_BASE_URL = "https://andrewsforest.oregonstate.edu"
 
 # The real query (real table/column names, real project-ID filters) lives in
 # an external, gitignored query.sql file -- never in this module -- so the
@@ -344,17 +357,45 @@ def build_bibtex_entry(row: Any, used_keys: set) -> str:
     if abstract:
         fields["abstract"] = escape_bibtex(abstract)
 
-    # online_linkage -> url ; online_pdf -> pdf (Zotero auto-attach on full URI)
+    # PDF link, in priority order:
+    #   1. online_pdf, verbatim, if the source column has a stored URL
+    #   2. else, if the pdf flag column is set, the URL derived from
+    #      pub_number using the same convention the Drupal publications
+    #      detail page uses (dbo.publication.pdf is a 'T'/'F' flag there,
+    #      not a URL -- the page builds
+    #      "https://andrewsforest.oregonstate.edu/pubs/pdf/pub<pub_number>.pdf"
+    #      itself when the flag is true; online_pdf frequently isn't
+    #      populated even though a PDF exists at that address)
+    # -> written to `pdf` (Zotero auto-attaches on full URI).
+    #
+    # `url` is kept separate from `pdf` on purpose: when a PDF link is
+    # available, url points at the publications detail page
+    # (.../publications/<pub_number>) instead of the raw PDF, so clicking
+    # the item's URL in Zotero takes the user to the catalog record rather
+    # than straight to a downloaded file. online_linkage is used only when
+    # there's no PDF at all -- there's no detail page to send them to
+    # without a pub_number-bearing PDF link.
+    pub_number = _get(row, "pub_number")
     online_linkage = _get(row, "online_linkage")
-    if online_linkage:
-        fields["url"] = online_linkage.strip()
     online_pdf = _get(row, "online_pdf")
+    pdf_flag = _get(row, "pdf")
+    pdf_link = None
     if online_pdf:
-        fields["pdf"] = online_pdf.strip()
+        pdf_link = online_pdf.strip()
+    elif pub_number and str(pdf_flag).strip().upper() in ("T", "TRUE", "1"):
+        pdf_link = f"{ANDREWS_FOREST_BASE_URL}/pubs/pdf/pub{pub_number}.pdf"
+
+    if pdf_link:
+        fields["pdf"] = pdf_link
+        if pub_number:
+            fields["url"] = f"{ANDREWS_FOREST_BASE_URL}/publications/{pub_number}"
+        elif online_linkage:
+            fields["url"] = online_linkage.strip()
+    elif online_linkage:
+        fields["url"] = online_linkage.strip()
 
     notes = _get(row, "notes")
     publication_id = _get(row, "publication_id")
-    pub_number = _get(row, "pub_number")
     catalog_id = _get(row, "catalog_id")
     note_parts = []
     if notes:
