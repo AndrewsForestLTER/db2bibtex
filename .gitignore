@@ -12,4 +12,4 @@ query_*.sql
 !query_*.sql.example
 SCHEMA_NOTES.md
 *.bib
-zotero_author_complete_audit*.csv
+zotero_author_complete_audit*

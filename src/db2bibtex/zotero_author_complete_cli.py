@@ -53,9 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Actually write changes to Zotero (default: dry-run, no writes)",
     )
     parser.add_argument(
-        "--audit-csv",
-        default="zotero_author_complete_audit.csv",
-        help="Output CSV audit path (default zotero_author_complete_audit.csv)",
+        "--audit-path",
+        default="zotero_author_complete_audit.xlsx",
+        help="Output .xlsx audit workbook path (default "
+        "zotero_author_complete_audit.xlsx)",
     )
     parser.add_argument(
         "--rate-limit",
@@ -109,7 +110,7 @@ def main(argv: list | None = None) -> int:
         api_key=api_key,
         crossref_mailto=crossref_mailto,
         dry_run=not args.live,
-        audit_csv=args.audit_csv,
+        audit_path=args.audit_path,
         collection_key=args.collection,
         crossref_rate_limit_sec=args.rate_limit,
     )
@@ -123,7 +124,7 @@ def main(argv: list | None = None) -> int:
         print(f"error: fix-authors run failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Wrote audit log ({len(result.rows)} rows) to {cfg.audit_csv}")
+    print(f"Wrote audit log ({len(result.rows)} rows) to {cfg.audit_path}")
     return 0
 
 

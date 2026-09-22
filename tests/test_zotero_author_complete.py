@@ -8,7 +8,6 @@ are mocked throughout, same convention as test_exporter.py's pyodbc mocks.
 from __future__ import annotations
 
 import configparser
-import csv
 from unittest.mock import MagicMock
 
 import pytest
@@ -474,42 +473,47 @@ def test_find_incomplete_items_uses_collection_when_given():
 
 
 # ---------------------------------------------------------------------------
-# write_audit_csv
+# write_audit_xlsx
 # ---------------------------------------------------------------------------
 
-def test_write_audit_csv(tmp_path):
+def test_write_audit_xlsx_raises_when_openpyxl_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(zac, "Workbook", None)
+    with pytest.raises(zac.ZoteroDepsMissingError):
+        zac.write_audit_xlsx([], str(tmp_path / "audit.xlsx"))
+
+
+def test_write_audit_xlsx(tmp_path):
     rows = [
         zac.AuditRow("A", "Title A", "10.1/a", "Old", "New", "updated"),
         zac.AuditRow("B", "Title B", "", "Old", "", "skipped-no-doi"),
     ]
-    out = tmp_path / "audit.csv"
+    out = tmp_path / "audit.xlsx"
 
-    zac.write_audit_csv(rows, str(out))
+    zac.write_audit_xlsx(rows, str(out))
 
-    with open(out, newline="", encoding="utf-8-sig") as f:
-        read_rows = list(csv.DictReader(f))
-    assert len(read_rows) == 2
-    assert read_rows[0]["item_key"] == "A"
-    assert read_rows[0]["status"] == "updated"
-    assert read_rows[1]["status"] == "skipped-no-doi"
+    from openpyxl import load_workbook
+
+    ws = load_workbook(out).active
+    header = [c.value for c in ws[1]]
+    assert header == zac.AUDIT_HEADERS
+    assert [c.value for c in ws[2]][:3] == ["A", "Title A", "10.1/a"]
+    assert ws[2][5].value == "updated"
+    assert ws[3][5].value == "skipped-no-doi"
 
 
-def test_write_audit_csv_is_excel_safe_utf8_with_bom(tmp_path):
-    """Excel on Windows -- the natural way to review the audit CSV before
-    trusting --live -- guesses the system codepage instead of UTF-8
-    without a BOM, garbling accented author names (e.g. 'Antão' ->
-    'AntÃ£o'). A UTF-8 BOM makes Excel autodetect it correctly."""
+def test_write_audit_xlsx_preserves_unicode_natively(tmp_path):
+    """A CSV forced fighting encoding/delimiter ambiguity for no benefit --
+    a real workbook stores Unicode natively, no codepage guessing that
+    used to mangle accented author names (e.g. 'Antão' -> 'AntÃ£o')."""
     rows = [zac.AuditRow("A", "Title", "10.1/a", "Antão; Błażewicz", "New", "updated")]
-    out = tmp_path / "audit.csv"
+    out = tmp_path / "audit.xlsx"
 
-    zac.write_audit_csv(rows, str(out))
+    zac.write_audit_xlsx(rows, str(out))
 
-    raw = out.read_bytes()
-    assert raw.startswith(b"\xef\xbb\xbf"), "expected a UTF-8 BOM at the start of the file"
+    from openpyxl import load_workbook
 
-    with open(out, newline="", encoding="utf-8-sig") as f:
-        read_rows = list(csv.DictReader(f))
-    assert read_rows[0]["old_creators"] == "Antão; Błażewicz"
+    ws = load_workbook(out).active
+    assert ws[2][3].value == "Antão; Błażewicz"
 
 
 # ---------------------------------------------------------------------------
@@ -518,12 +522,12 @@ def test_write_audit_csv_is_excel_safe_utf8_with_bom(tmp_path):
 
 def test_run_raises_when_pyzotero_missing(monkeypatch):
     monkeypatch.setattr(zac, "zotero", None)
-    cfg = _cfg(audit_csv="unused.csv")
+    cfg = _cfg(audit_path="unused.xlsx")
     with pytest.raises(zac.ZoteroDepsMissingError):
         zac.run(cfg, progress_callback=lambda *_: None)
 
 
-def test_run_writes_audit_csv_and_counts(monkeypatch, tmp_path):
+def test_run_writes_audit_xlsx_and_counts(monkeypatch, tmp_path):
     fake_zotero_module = MagicMock()
     fake_client = MagicMock()
     fake_client.everything.return_value = [
@@ -535,8 +539,8 @@ def test_run_writes_audit_csv_and_counts(monkeypatch, tmp_path):
     monkeypatch.setattr(zac, "fetch_authors_crossref", lambda doi, mailto: None)
     monkeypatch.setattr(zac, "fetch_authors_datacite", lambda doi: None)
 
-    audit_path = tmp_path / "audit.csv"
-    cfg = _cfg(audit_csv=str(audit_path))
+    audit_path = tmp_path / "audit.xlsx"
+    cfg = _cfg(audit_path=str(audit_path))
     messages = []
 
     result = zac.run(cfg, progress_callback=messages.append)

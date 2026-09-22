@@ -73,7 +73,7 @@ class App(tk.Tk):
         self.crossref_mailto_var = tk.StringVar()
         self.fix_collection_var = tk.StringVar()
         self.fix_live_var = tk.BooleanVar(value=False)
-        self.fix_audit_csv_var = tk.StringVar(value="zotero_author_complete_audit.csv")
+        self.fix_audit_path_var = tk.StringVar(value="zotero_author_complete_audit.xlsx")
         self.fix_rate_limit_var = tk.DoubleVar(value=0.5)
 
         self._build_menu()
@@ -320,13 +320,13 @@ class App(tk.Tk):
         ).grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
 
-        ttk.Label(frame, text="Audit CSV output").grid(row=row, column=0, sticky="w")
+        ttk.Label(frame, text="Audit output (.xlsx)").grid(row=row, column=0, sticky="w")
         audit_frame = ttk.Frame(frame)
         audit_frame.grid(row=row, column=1, sticky="ew")
-        ttk.Entry(audit_frame, textvariable=self.fix_audit_csv_var, width=32).pack(
+        ttk.Entry(audit_frame, textvariable=self.fix_audit_path_var, width=32).pack(
             side="left", fill="x", expand=True
         )
-        ttk.Button(audit_frame, text="Browse...", command=self.on_browse_audit_csv).pack(side="left")
+        ttk.Button(audit_frame, text="Browse...", command=self.on_browse_audit_path).pack(side="left")
         row += 1
 
         ttk.Label(frame, text="CrossRef rate limit (sec)").grid(row=row, column=0, sticky="w")
@@ -668,14 +668,14 @@ class App(tk.Tk):
         """Toggle Zotero API key field masking."""
         self.api_key_entry.configure(show="" if self.show_api_key_var.get() else "*")
 
-    def on_browse_audit_csv(self) -> None:
+    def on_browse_audit_path(self) -> None:
         path = filedialog.asksaveasfilename(
-            defaultextension=".csv",
-            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-            initialfile=self.fix_audit_csv_var.get(),
+            defaultextension=".xlsx",
+            filetypes=[("Excel workbook", "*.xlsx"), ("All files", "*.*")],
+            initialfile=self.fix_audit_path_var.get(),
         )
         if path:
-            self.fix_audit_csv_var.set(path)
+            self.fix_audit_path_var.set(path)
 
     def on_run_fix_authors(self) -> None:
         """Validate inputs and launch the fix-authors scan on a background thread."""
@@ -731,7 +731,7 @@ class App(tk.Tk):
             api_key=api_key,
             crossref_mailto=crossref_mailto,
             dry_run=not live,
-            audit_csv=self.fix_audit_csv_var.get().strip() or "zotero_author_complete_audit.csv",
+            audit_path=self.fix_audit_path_var.get().strip() or "zotero_author_complete_audit.xlsx",
             collection_key=collection,
             crossref_rate_limit_sec=self.fix_rate_limit_var.get(),
         )
@@ -748,7 +748,7 @@ class App(tk.Tk):
         try:
             result = run_fix_authors(cfg, progress_callback=self._fix_log_queue.put)
             self._fix_log_queue.put(
-                f"DONE: wrote audit log ({len(result.rows)} rows) to {cfg.audit_csv}"
+                f"DONE: wrote audit log ({len(result.rows)} rows) to {cfg.audit_path}"
             )
         except ZoteroDepsMissingError as exc:
             self._fix_log_queue.put(f"ERROR: {exc}")

@@ -210,9 +210,11 @@ mailto = your_email@example.org
 
 **Dry-run by default** -- no changes are written to Zotero unless you pass
 `--live` (CLI) or check **Apply changes live** (GUI). Every item scanned is
-written to an audit CSV (`item_key, title, doi, old_creators, new_creators,
-status, detail`) whether or not it changed, so review that file before ever
-running live. **Test against one collection first** (`--collection`
+written to an audit workbook (`item_key, title, doi, old_creators,
+new_creators, status, detail`, as an `.xlsx` file -- native Unicode, no
+CSV encoding/delimiter ambiguity) whether or not it changed, so review
+that file before ever running live. **Test against one collection first**
+(`--collection`
 CLI flag / **Collection** GUI field) before running across the whole
 library -- the GUI warns you if you check **Apply changes live** with no
 collection set.
@@ -226,10 +228,11 @@ db2bibtex-fix-authors --config db_config.ini --live   # whole library, once you 
 ```
 
 Run `db2bibtex-fix-authors --help` for the full flag list. If pyzotero/
-`requests` aren't installed, install the extra: `pip install -e ".[zotero]"`.
+`requests`/`openpyxl` aren't installed, install the extra:
+`pip install -e ".[zotero]"`.
 
 The GUI's **Fix Authors** tab offers the same fields (Library ID, Library
-type, API key, CrossRef mailto, optional Collection, Audit CSV output) plus
+type, API key, CrossRef mailto, optional Collection, Audit output path) plus
 an **Apply changes live** checkbox (unchecked = dry-run) and a
 **Scan & Fix Authors** button, running on a background thread with the same
 log/error handling as the other tabs.

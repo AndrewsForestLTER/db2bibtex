@@ -362,18 +362,18 @@ def test_api_key_visibility_toggle(app):
     assert app.api_key_entry.cget("show") == "*"
 
 
-def test_browse_audit_csv_sets_field(app, tmp_path):
-    picked = tmp_path / "custom_audit.csv"
+def test_browse_audit_path_sets_field(app, tmp_path):
+    picked = tmp_path / "custom_audit.xlsx"
     with patch.object(gui_module.filedialog, "asksaveasfilename", return_value=str(picked)):
-        app.on_browse_audit_csv()
-    assert app.fix_audit_csv_var.get() == str(picked)
+        app.on_browse_audit_path()
+    assert app.fix_audit_path_var.get() == str(picked)
 
 
-def test_browse_audit_csv_cancelled_leaves_field_unchanged(app):
-    original = app.fix_audit_csv_var.get()
+def test_browse_audit_path_cancelled_leaves_field_unchanged(app):
+    original = app.fix_audit_path_var.get()
     with patch.object(gui_module.filedialog, "asksaveasfilename", return_value=""):
-        app.on_browse_audit_csv()
-    assert app.fix_audit_csv_var.get() == original
+        app.on_browse_audit_path()
+    assert app.fix_audit_path_var.get() == original
 
 
 def test_run_fix_authors_missing_library_id_shows_messagebox(app):
@@ -415,7 +415,7 @@ def test_run_fix_authors_missing_crossref_mailto_shows_messagebox(app):
 def test_run_fix_authors_dry_run_does_not_prompt_confirmation(app, tmp_path):
     _set_valid_fix_fields(app)
     app.fix_live_var.set(False)
-    app.fix_audit_csv_var.set(str(tmp_path / "audit.csv"))
+    app.fix_audit_path_var.set(str(tmp_path / "audit.xlsx"))
     fake_result = RunResult(rows=[], counts={})
 
     with patch.object(
@@ -435,7 +435,7 @@ def test_run_fix_authors_live_without_collection_warns_and_respects_no(app, tmp_
     _set_valid_fix_fields(app)
     app.fix_live_var.set(True)
     app.fix_collection_var.set("")
-    app.fix_audit_csv_var.set(str(tmp_path / "audit.csv"))
+    app.fix_audit_path_var.set(str(tmp_path / "audit.xlsx"))
 
     with patch.object(gui_module, "run_fix_authors") as mock_run, patch.object(
         gui_module.messagebox, "askyesno", return_value=False
@@ -451,7 +451,7 @@ def test_run_fix_authors_live_confirmed_runs(app, tmp_path):
     _set_valid_fix_fields(app)
     app.fix_live_var.set(True)
     app.fix_collection_var.set("COLLKEY")
-    app.fix_audit_csv_var.set(str(tmp_path / "audit.csv"))
+    app.fix_audit_path_var.set(str(tmp_path / "audit.xlsx"))
     fake_result = RunResult(
         rows=[AuditRow("A", "Title", "10.1/a", "Old", "New", "updated")], counts={"updated": 1}
     )
@@ -479,7 +479,7 @@ def test_run_fix_authors_live_confirmed_runs(app, tmp_path):
 
 def test_run_fix_authors_error_path_shows_messagebox(app, tmp_path):
     _set_valid_fix_fields(app)
-    app.fix_audit_csv_var.set(str(tmp_path / "audit.csv"))
+    app.fix_audit_path_var.set(str(tmp_path / "audit.xlsx"))
 
     with patch.object(
         gui_module, "run_fix_authors", side_effect=ZoteroDepsMissingError("pyzotero unavailable")
@@ -500,7 +500,7 @@ def test_run_fix_authors_error_path_shows_messagebox(app, tmp_path):
 
 def test_run_fix_authors_already_running_shows_warning(app, tmp_path):
     _set_valid_fix_fields(app)
-    app.fix_audit_csv_var.set(str(tmp_path / "audit.csv"))
+    app.fix_audit_path_var.set(str(tmp_path / "audit.xlsx"))
     app._fix_worker_thread = MagicMock()
     app._fix_worker_thread.is_alive.return_value = True
 

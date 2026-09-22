@@ -17,11 +17,11 @@ Design notes:
   "et al.", "et. al.", "et.al.", ...) but always requires a separator
   between "et" and "al", so a real (if rare) surname like "Etal" is never
   mistaken for the sentinel. An item only ever reaches the audit
-  CSV if it was flagged, and its full original creator list (sentinel
-  entry included, verbatim) is written to that CSV's old_creators column
-  -- so the first --collection dry-run doubles as a way to confirm the
-  matcher is actually catching this library's real sentinel formatting
-  before trusting it at scale.
+  workbook if it was flagged, and its full original creator list
+  (sentinel entry included, verbatim) is written to that workbook's
+  old_creators column -- so the first --collection dry-run doubles as a
+  way to confirm the matcher is actually catching this library's real
+  sentinel formatting before trusting it at scale.
 - Merge is a full replace of `creators`, never a diff/append: "et al."
   is an unambiguous incomplete-list marker, so nothing in the old list is
   worth preserving.
@@ -33,7 +33,6 @@ Design notes:
 from __future__ import annotations
 
 import configparser
-import csv
 import logging
 import re
 import time
@@ -49,6 +48,13 @@ try:
     from pyzotero import zotero
 except ImportError:  # pragma: no cover -- exercised via ZoteroDepsMissingError tests
     zotero = None
+
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+except ImportError:  # pragma: no cover -- exercised via ZoteroDepsMissingError tests
+    Workbook = None
+    Font = None
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +92,7 @@ class Config:
     api_key: str
     crossref_mailto: str  # for CrossRef "polite pool"
     dry_run: bool = True
-    audit_csv: str = "zotero_author_complete_audit.csv"
+    audit_path: str = "zotero_author_complete_audit.xlsx"
     collection_key: str | None = None  # optional: restrict to one collection
     crossref_rate_limit_sec: float = DEFAULT_CROSSREF_RATE_LIMIT_SEC
 
@@ -297,8 +303,8 @@ def _creator_display_name(c: dict) -> str:
     """Full display name for one creator, firstName included.
 
     is_incomplete() can flag an item because of a sentinel hiding in
-    firstName alone ("Cynthia S. et al"/lastName "Brown") -- audit_csv's
-    old_creators column has to show firstName too, or a reviewer checking
+    firstName alone ("Cynthia S. et al"/lastName "Brown") -- the audit
+    workbook's old_creators column has to show firstName too, or a reviewer checking
     *why* an item was flagged (the whole point of the dry-run audit trail)
     sees a clean-looking lastName-only list with no visible evidence.
     """
@@ -350,25 +356,48 @@ def process_item(zot, item: dict, cfg: Config) -> AuditRow:
         return AuditRow(key, title, doi, old_creators_str, new_creators_str, "error", str(exc))
 
 
-def write_audit_csv(rows: list[AuditRow], path: str) -> None:
-    # utf-8-sig (UTF-8 + BOM): Excel on Windows -- the natural way to
-    # "review the audit CSV" before trusting --live -- guesses the system
-    # codepage instead of UTF-8 without a BOM, garbling any accented
-    # author name (e.g. "Antão" -> "AntÃ£o").
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            ["item_key", "title", "doi", "old_creators", "new_creators", "status", "detail"]
+AUDIT_HEADERS = ["item_key", "title", "doi", "old_creators", "new_creators", "status", "detail"]
+# old_creators/new_creators can run to hundreds of authors on a heavily
+# collaborative paper -- generous but bounded widths keep the sheet
+# readable without ballooning row heights (wrap_text is deliberately left
+# off; Excel's formula bar shows the full cell on selection).
+AUDIT_COLUMN_WIDTHS = {"A": 12, "B": 45, "C": 20, "D": 60, "E": 60, "F": 18, "G": 30}
+
+
+def _require_openpyxl() -> None:
+    if Workbook is None:
+        raise ZoteroDepsMissingError(
+            "openpyxl is required to write the audit workbook but is not "
+            "importable. Install it with: pip install -e '.[zotero]'"
         )
-        for r in rows:
-            writer.writerow(
-                [r.item_key, r.title, r.doi, r.old_creators, r.new_creators, r.status, r.detail]
-            )
+
+
+def write_audit_xlsx(rows: list[AuditRow], path: str) -> None:
+    """Write the audit trail as a real .xlsx workbook.
+
+    A CSV forced fighting delimiter/encoding ambiguity for no benefit --
+    a real workbook has native Unicode (no codepage guessing that mangled
+    accented author names, e.g. "Antão" -> "AntÃ£o") and actual cell
+    boundaries instead of a flat delimited text file.
+    """
+    _require_openpyxl()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "audit"
+    ws.append(AUDIT_HEADERS)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    ws.freeze_panes = "A2"
+    for r in rows:
+        ws.append([r.item_key, r.title, r.doi, r.old_creators, r.new_creators, r.status, r.detail])
+    for col_letter, width in AUDIT_COLUMN_WIDTHS.items():
+        ws.column_dimensions[col_letter].width = width
+    wb.save(path)
 
 
 def run(cfg: Config, progress_callback=print) -> RunResult:
     """Scan the library (or one collection), process every flagged item, and
-    write the audit CSV. Used by both the CLI and tests."""
+    write the audit workbook. Used by both the CLI and tests."""
     zot = get_client(cfg)
 
     progress_callback(
@@ -381,13 +410,13 @@ def run(cfg: Config, progress_callback=print) -> RunResult:
 
     rows = [process_item(zot, item, cfg) for item in incomplete]
 
-    write_audit_csv(rows, cfg.audit_csv)
+    write_audit_xlsx(rows, cfg.audit_path)
     counts: dict = {}
     for r in rows:
         counts[r.status] = counts.get(r.status, 0) + 1
     progress_callback(f"Done. {counts}")
     if cfg.dry_run:
         progress_callback(
-            f"Dry-run only -- rerun with --live to apply changes. Review {cfg.audit_csv} first."
+            f"Dry-run only -- rerun with --live to apply changes. Review {cfg.audit_path} first."
         )
     return RunResult(rows=rows, counts=counts)
