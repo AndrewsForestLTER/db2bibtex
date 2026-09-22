@@ -8,5 +8,8 @@ dist/
 .pytest_cache/
 db_config.ini
 query.sql
+query_*.sql
+!query_*.sql.example
 SCHEMA_NOTES.md
 *.bib
+zotero_author_complete_audit*.csv

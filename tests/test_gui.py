@@ -15,6 +15,7 @@ import pytest
 
 from db2bibtex import gui as gui_module
 from db2bibtex.exporter import ExportResult, PyodbcMissingError, QueryFileMissingError
+from db2bibtex.zotero_author_complete import AuditRow, RunResult, ZoteroDepsMissingError
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"),
@@ -242,9 +243,9 @@ def test_run_export_missing_query_file_shows_friendly_error(app, tmp_path):
     assert not any("Traceback" in msg for msg in drained)
 
 
-def test_notebook_has_export_and_compare_tabs(app):
+def test_notebook_has_export_compare_and_fix_authors_tabs(app):
     tab_texts = [app.notebook.tab(tab_id, "text") for tab_id in app.notebook.tabs()]
-    assert tab_texts == ["Export", "Compare"]
+    assert tab_texts == ["Export", "Compare", "Fix Authors"]
 
 
 def test_browse_backup_sets_field(app, tmp_path):
@@ -338,3 +339,201 @@ def test_run_compare_error_path_shows_messagebox(app, tmp_path):
                 break
 
     assert any(msg.startswith("ERROR:") for msg in drained)
+
+
+# ---------------------------------------------------------------------------
+# Fix Authors tab
+# ---------------------------------------------------------------------------
+
+def _set_valid_fix_fields(app):
+    app.zotero_library_id_var.set("12345")
+    app.zotero_library_type_var.set("group")
+    app.zotero_api_key_var.set("secret-key")
+    app.crossref_mailto_var.set("someone@example.org")
+
+
+def test_api_key_visibility_toggle(app):
+    assert app.api_key_entry.cget("show") == "*"
+    app.show_api_key_var.set(True)
+    app.on_show_api_key_toggle()
+    assert app.api_key_entry.cget("show") == ""
+    app.show_api_key_var.set(False)
+    app.on_show_api_key_toggle()
+    assert app.api_key_entry.cget("show") == "*"
+
+
+def test_browse_audit_csv_sets_field(app, tmp_path):
+    picked = tmp_path / "custom_audit.csv"
+    with patch.object(gui_module.filedialog, "asksaveasfilename", return_value=str(picked)):
+        app.on_browse_audit_csv()
+    assert app.fix_audit_csv_var.get() == str(picked)
+
+
+def test_browse_audit_csv_cancelled_leaves_field_unchanged(app):
+    original = app.fix_audit_csv_var.get()
+    with patch.object(gui_module.filedialog, "asksaveasfilename", return_value=""):
+        app.on_browse_audit_csv()
+    assert app.fix_audit_csv_var.get() == original
+
+
+def test_run_fix_authors_missing_library_id_shows_messagebox(app):
+    _set_valid_fix_fields(app)
+    app.zotero_library_id_var.set("")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_fix_authors()
+    mock_showerror.assert_called_once()
+    assert app._fix_worker_thread is None
+
+
+def test_run_fix_authors_missing_library_type_shows_messagebox(app):
+    _set_valid_fix_fields(app)
+    app.zotero_library_type_var.set("")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_fix_authors()
+    mock_showerror.assert_called_once()
+    assert app._fix_worker_thread is None
+
+
+def test_run_fix_authors_missing_api_key_shows_messagebox(app):
+    _set_valid_fix_fields(app)
+    app.zotero_api_key_var.set("")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_fix_authors()
+    mock_showerror.assert_called_once()
+    assert app._fix_worker_thread is None
+
+
+def test_run_fix_authors_missing_crossref_mailto_shows_messagebox(app):
+    _set_valid_fix_fields(app)
+    app.crossref_mailto_var.set("")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_fix_authors()
+    mock_showerror.assert_called_once()
+    assert app._fix_worker_thread is None
+
+
+def test_run_fix_authors_dry_run_does_not_prompt_confirmation(app, tmp_path):
+    _set_valid_fix_fields(app)
+    app.fix_live_var.set(False)
+    app.fix_audit_csv_var.set(str(tmp_path / "audit.csv"))
+    fake_result = RunResult(rows=[], counts={})
+
+    with patch.object(
+        gui_module, "run_fix_authors", return_value=fake_result
+    ) as mock_run, patch.object(gui_module.messagebox, "askyesno") as mock_askyesno:
+        app.on_run_fix_authors()
+        assert app._fix_worker_thread is not None
+        app._fix_worker_thread.join(timeout=5)
+
+    mock_askyesno.assert_not_called()
+    mock_run.assert_called_once()
+    called_cfg = mock_run.call_args[0][0]
+    assert called_cfg.dry_run is True
+
+
+def test_run_fix_authors_live_without_collection_warns_and_respects_no(app, tmp_path):
+    _set_valid_fix_fields(app)
+    app.fix_live_var.set(True)
+    app.fix_collection_var.set("")
+    app.fix_audit_csv_var.set(str(tmp_path / "audit.csv"))
+
+    with patch.object(gui_module, "run_fix_authors") as mock_run, patch.object(
+        gui_module.messagebox, "askyesno", return_value=False
+    ) as mock_askyesno:
+        app.on_run_fix_authors()
+
+    mock_askyesno.assert_called_once()
+    mock_run.assert_not_called()
+    assert app._fix_worker_thread is None
+
+
+def test_run_fix_authors_live_confirmed_runs(app, tmp_path):
+    _set_valid_fix_fields(app)
+    app.fix_live_var.set(True)
+    app.fix_collection_var.set("COLLKEY")
+    app.fix_audit_csv_var.set(str(tmp_path / "audit.csv"))
+    fake_result = RunResult(
+        rows=[AuditRow("A", "Title", "10.1/a", "Old", "New", "updated")], counts={"updated": 1}
+    )
+
+    with patch.object(
+        gui_module, "run_fix_authors", return_value=fake_result
+    ) as mock_run, patch.object(gui_module.messagebox, "askyesno", return_value=True):
+        app.on_run_fix_authors()
+        assert app._fix_worker_thread is not None
+        app._fix_worker_thread.join(timeout=5)
+
+        drained = []
+        while True:
+            try:
+                drained.append(app._fix_log_queue.get_nowait())
+            except Exception:
+                break
+
+    mock_run.assert_called_once()
+    called_cfg = mock_run.call_args[0][0]
+    assert called_cfg.dry_run is False
+    assert called_cfg.collection_key == "COLLKEY"
+    assert any("DONE" in m for m in drained)
+
+
+def test_run_fix_authors_error_path_shows_messagebox(app, tmp_path):
+    _set_valid_fix_fields(app)
+    app.fix_audit_csv_var.set(str(tmp_path / "audit.csv"))
+
+    with patch.object(
+        gui_module, "run_fix_authors", side_effect=ZoteroDepsMissingError("pyzotero unavailable")
+    ):
+        app.on_run_fix_authors()
+        assert app._fix_worker_thread is not None
+        app._fix_worker_thread.join(timeout=5)
+
+        drained = []
+        while True:
+            try:
+                drained.append(app._fix_log_queue.get_nowait())
+            except Exception:
+                break
+
+    assert any("pyzotero unavailable" in m for m in drained)
+
+
+def test_run_fix_authors_already_running_shows_warning(app, tmp_path):
+    _set_valid_fix_fields(app)
+    app.fix_audit_csv_var.set(str(tmp_path / "audit.csv"))
+    app._fix_worker_thread = MagicMock()
+    app._fix_worker_thread.is_alive.return_value = True
+
+    with patch.object(gui_module.messagebox, "showwarning") as mock_showwarning:
+        app.on_run_fix_authors()
+
+    mock_showwarning.assert_called_once()
+
+
+def test_shared_config_round_trip_preserves_both_sections(app, tmp_path):
+    """Saving from one tab must not clobber the other tab's section in the
+    same shared db_config.ini file."""
+    config_path = tmp_path / "shared.ini"
+
+    app.server_var.set("testserver.example.edu")
+    app.database_var.set("testdb")
+    app.trusted_var.set(True)
+    app.zotero_library_id_var.set("54321")
+    app.zotero_library_type_var.set("user")
+    app.zotero_api_key_var.set("zkey")
+    app.crossref_mailto_var.set("me@example.org")
+
+    app.save_config_to_path(str(config_path))
+
+    fresh = gui_module.App()
+    fresh.withdraw()
+    try:
+        fresh.load_config_from_path(str(config_path))
+        assert fresh.server_var.get() == "testserver.example.edu"
+        assert fresh.database_var.get() == "testdb"
+        assert fresh.zotero_library_id_var.get() == "54321"
+        assert fresh.zotero_library_type_var.get() == "user"
+        assert fresh.zotero_api_key_var.get() == "zkey"
+        assert fresh.crossref_mailto_var.get() == "me@example.org"
+    finally:
+        fresh.destroy()

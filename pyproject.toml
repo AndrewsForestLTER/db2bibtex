@@ -14,10 +14,12 @@ dependencies = ["pyodbc"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+zotero = ["pyzotero>=1.5", "requests>=2.31"]
 
 [project.scripts]
 db2bibtex = "db2bibtex.cli:main"
 db2bibtex-compare = "db2bibtex.compare_cli:main"
+db2bibtex-fix-authors = "db2bibtex.zotero_author_complete_cli:main"
 
 [project.gui-scripts]
 db2bibtex-gui = "db2bibtex.gui:main"

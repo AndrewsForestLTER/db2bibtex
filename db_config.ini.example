@@ -7,3 +7,11 @@ trustservercertificate = yes/no
 
 [Driver]
 driver = {your sql driver details go here}
+
+[Zotero]
+library_id = your_zotero_library_id_here
+library_type = group_or_user
+api_key = your_zotero_api_key_here
+
+[CrossRef]
+mailto = your_email@example.org

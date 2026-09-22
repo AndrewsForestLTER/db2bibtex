@@ -18,6 +18,11 @@ from db2bibtex.exporter import (
     run_export,
     save_config,
 )
+from db2bibtex.zotero_author_complete import Config as FixAuthorsConfig
+from db2bibtex.zotero_author_complete import ZoteroDepsMissingError
+from db2bibtex.zotero_author_complete import load_config as load_zotero_config
+from db2bibtex.zotero_author_complete import run as run_fix_authors
+from db2bibtex.zotero_author_complete import save_config as save_zotero_config
 
 ABOUT_TEXT = (
     "db2bibtex {version}\n\n"
@@ -43,6 +48,9 @@ class App(tk.Tk):
         self._compare_log_queue: "queue.Queue[str]" = queue.Queue()
         self._compare_worker_thread: threading.Thread | None = None
 
+        self._fix_log_queue: "queue.Queue[str]" = queue.Queue()
+        self._fix_worker_thread: threading.Thread | None = None
+
         self.server_var = tk.StringVar()
         self.database_var = tk.StringVar()
         self.driver_var = tk.StringVar(value=DEFAULT_DRIVER)
@@ -57,6 +65,16 @@ class App(tk.Tk):
         self.backup_var = tk.StringVar()
         self.library_var = tk.StringVar()
         self.compare_output_var = tk.StringVar(value="missing_from_library.bib")
+
+        self.zotero_library_id_var = tk.StringVar()
+        self.zotero_library_type_var = tk.StringVar(value="group")
+        self.zotero_api_key_var = tk.StringVar()
+        self.show_api_key_var = tk.BooleanVar(value=False)
+        self.crossref_mailto_var = tk.StringVar()
+        self.fix_collection_var = tk.StringVar()
+        self.fix_live_var = tk.BooleanVar(value=False)
+        self.fix_audit_csv_var = tk.StringVar(value="zotero_author_complete_audit.csv")
+        self.fix_rate_limit_var = tk.DoubleVar(value=0.5)
 
         self._build_menu()
 
@@ -75,13 +93,21 @@ class App(tk.Tk):
         self.compare_tab.rowconfigure(1, weight=1)
         self.notebook.add(self.compare_tab, text="Compare")
 
+        self.fix_tab = ttk.Frame(self.notebook)
+        self.fix_tab.columnconfigure(0, weight=1)
+        self.fix_tab.rowconfigure(1, weight=1)
+        self.notebook.add(self.fix_tab, text="Fix Authors")
+
         self._build_export_form()
         self._build_export_log_pane()
         self._build_compare_form()
         self._build_compare_log_pane()
+        self._build_fix_form()
+        self._build_fix_log_pane()
 
         self.after(100, self._poll_queue)
         self.after(100, self._poll_compare_queue)
+        self.after(100, self._poll_fix_queue)
 
     # ------------------------------------------------------------------
     # Construction
@@ -242,6 +268,99 @@ class App(tk.Tk):
         self.compare_log_text.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+    def _build_fix_form(self) -> None:
+        frame = ttk.Frame(self.fix_tab, padding=10)
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        row = 0
+        ttk.Label(frame, text="Zotero library ID").grid(row=row, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.zotero_library_id_var, width=40).grid(
+            row=row, column=1, sticky="ew"
+        )
+        row += 1
+
+        ttk.Label(frame, text="Library type").grid(row=row, column=0, sticky="w")
+        ttk.Combobox(
+            frame,
+            textvariable=self.zotero_library_type_var,
+            values=["group", "user"],
+            state="readonly",
+            width=10,
+        ).grid(row=row, column=1, sticky="w")
+        row += 1
+
+        ttk.Label(frame, text="Zotero API key").grid(row=row, column=0, sticky="w")
+        api_key_frame = ttk.Frame(frame)
+        api_key_frame.grid(row=row, column=1, sticky="ew")
+        self.api_key_entry = ttk.Entry(
+            api_key_frame, textvariable=self.zotero_api_key_var, show="*", width=32
+        )
+        self.api_key_entry.pack(side="left", fill="x", expand=True)
+        ttk.Checkbutton(
+            api_key_frame, text="Show", variable=self.show_api_key_var, command=self.on_show_api_key_toggle
+        ).pack(side="left")
+        row += 1
+
+        ttk.Label(frame, text="CrossRef mailto").grid(row=row, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.crossref_mailto_var, width=40).grid(
+            row=row, column=1, sticky="ew"
+        )
+        row += 1
+
+        ttk.Label(frame, text="Collection (optional)").grid(row=row, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.fix_collection_var, width=40).grid(
+            row=row, column=1, sticky="ew"
+        )
+        row += 1
+        ttk.Label(
+            frame,
+            text="Recommended for a first run: restrict to one collection before the whole library.",
+            font=("TkDefaultFont", 8),
+            foreground="gray40",
+        ).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        ttk.Label(frame, text="Audit CSV output").grid(row=row, column=0, sticky="w")
+        audit_frame = ttk.Frame(frame)
+        audit_frame.grid(row=row, column=1, sticky="ew")
+        ttk.Entry(audit_frame, textvariable=self.fix_audit_csv_var, width=32).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(audit_frame, text="Browse...", command=self.on_browse_audit_csv).pack(side="left")
+        row += 1
+
+        ttk.Label(frame, text="CrossRef rate limit (sec)").grid(row=row, column=0, sticky="w")
+        ttk.Spinbox(
+            frame, from_=0, to=10, increment=0.1, textvariable=self.fix_rate_limit_var, width=10
+        ).grid(row=row, column=1, sticky="w")
+        row += 1
+
+        ttk.Checkbutton(
+            frame,
+            text="Apply changes live (default: dry-run, no writes to Zotero)",
+            variable=self.fix_live_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        self.fix_run_button = ttk.Button(frame, text="Scan & Fix Authors", command=self.on_run_fix_authors)
+        self.fix_run_button.grid(row=row, column=0, columnspan=2, pady=(10, 0))
+        row += 1
+
+        self.fix_progress = ttk.Progressbar(frame, mode="indeterminate")
+        self.fix_progress.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+
+        frame.columnconfigure(1, weight=1)
+
+    def _build_fix_log_pane(self) -> None:
+        log_frame = ttk.Frame(self.fix_tab, padding=(10, 0, 10, 10))
+        log_frame.grid(row=1, column=0, sticky="nsew")
+
+        self.fix_log_text = tk.Text(log_frame, height=10, state="disabled", wrap="word")
+        scrollbar = ttk.Scrollbar(log_frame, command=self.fix_log_text.yview)
+        self.fix_log_text.configure(yscrollcommand=scrollbar.set)
+        self.fix_log_text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
     # ------------------------------------------------------------------
     # Interactive logic -- Export tab
     # ------------------------------------------------------------------
@@ -282,7 +401,9 @@ class App(tk.Tk):
             messagebox.showerror("Load Config Failed", str(exc))
 
     def load_config_from_path(self, path: str) -> None:
-        """Load an .ini config file into the form fields."""
+        """Load an .ini config file into the form fields (Export tab's
+        [Database]/[Driver] sections and Fix Authors' [Zotero]/[CrossRef]
+        sections, if present -- both features can share one file)."""
         cfg = load_config(path)
         if cfg.get("server"):
             self.server_var.set(cfg["server"])
@@ -297,17 +418,30 @@ class App(tk.Tk):
         self.trusted_var.set(not bool(cfg.get("uid")))
         self.on_trusted_toggle()
 
+        zcfg = load_zotero_config(path)
+        if zcfg.get("library_id"):
+            self.zotero_library_id_var.set(zcfg["library_id"])
+        if zcfg.get("library_type"):
+            self.zotero_library_type_var.set(zcfg["library_type"])
+        if zcfg.get("api_key"):
+            self.zotero_api_key_var.set(zcfg["api_key"])
+        if zcfg.get("crossref_mailto"):
+            self.crossref_mailto_var.set(zcfg["crossref_mailto"])
+
     def on_save_config(self) -> None:
         path = filedialog.asksaveasfilename(
             defaultextension=".ini", filetypes=[("Config files", "*.ini"), ("All files", "*.*")]
         )
         if not path:
             return
-        if self.password_var.get() and not self.trusted_var.get():
+        secrets_present = (
+            self.password_var.get() and not self.trusted_var.get()
+        ) or self.zotero_api_key_var.get()
+        if secrets_present:
             if not messagebox.askyesno(
-                "Save Plaintext Password?",
-                "This will write your database password to disk in plaintext.\n\n"
-                "Continue?",
+                "Save Plaintext Secrets?",
+                "This will write your database password and/or Zotero API "
+                "key to disk in plaintext.\n\nContinue?",
             ):
                 return
         try:
@@ -316,7 +450,8 @@ class App(tk.Tk):
             messagebox.showerror("Save Config Failed", str(exc))
 
     def save_config_to_path(self, path: str) -> None:
-        """Save the current form fields to an .ini config file."""
+        """Save the current form fields (Export tab and Fix Authors tab) to
+        an .ini config file."""
         save_config(
             path,
             server=self.server_var.get(),
@@ -325,6 +460,13 @@ class App(tk.Tk):
             uid=None if self.trusted_var.get() else self.username_var.get(),
             pwd=None if self.trusted_var.get() else self.password_var.get(),
             trust_server_certificate=True,
+        )
+        save_zotero_config(
+            path,
+            library_id=self.zotero_library_id_var.get().strip(),
+            library_type=self.zotero_library_type_var.get().strip(),
+            api_key=self.zotero_api_key_var.get(),
+            crossref_mailto=self.crossref_mailto_var.get().strip(),
         )
 
     def show_about(self) -> None:
@@ -518,6 +660,124 @@ class App(tk.Tk):
         self.compare_log_text.insert("end", msg + "\n")
         self.compare_log_text.see("end")
         self.compare_log_text.configure(state="disabled")
+
+    # ------------------------------------------------------------------
+    # Interactive logic -- Fix Authors tab
+    # ------------------------------------------------------------------
+    def on_show_api_key_toggle(self) -> None:
+        """Toggle Zotero API key field masking."""
+        self.api_key_entry.configure(show="" if self.show_api_key_var.get() else "*")
+
+    def on_browse_audit_csv(self) -> None:
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile=self.fix_audit_csv_var.get(),
+        )
+        if path:
+            self.fix_audit_csv_var.set(path)
+
+    def on_run_fix_authors(self) -> None:
+        """Validate inputs and launch the fix-authors scan on a background thread."""
+        library_id = self.zotero_library_id_var.get().strip()
+        if not library_id:
+            messagebox.showerror("Missing Library ID", "Please enter a Zotero library ID.")
+            return
+
+        library_type = self.zotero_library_type_var.get().strip()
+        if not library_type:
+            messagebox.showerror("Missing Library Type", "Please choose a library type.")
+            return
+
+        api_key = self.zotero_api_key_var.get().strip()
+        if not api_key:
+            messagebox.showerror("Missing API Key", "Please enter a Zotero API key.")
+            return
+
+        crossref_mailto = self.crossref_mailto_var.get().strip()
+        if not crossref_mailto:
+            messagebox.showerror(
+                "Missing CrossRef Mailto", "Please enter an email address for CrossRef's polite pool."
+            )
+            return
+
+        if self._fix_worker_thread and self._fix_worker_thread.is_alive():
+            messagebox.showwarning("Scan Running", "A fix-authors scan is already in progress.")
+            return
+
+        collection = self.fix_collection_var.get().strip() or None
+        live = self.fix_live_var.get()
+
+        if live:
+            if collection:
+                warning = (
+                    "This will write changes to your live Zotero library "
+                    f"(collection {collection}).\n\nContinue?"
+                )
+            else:
+                warning = (
+                    "This will write changes across your ENTIRE live Zotero "
+                    "library -- no collection restriction is set.\n\n"
+                    "Recommended: test on one collection first (fill in the "
+                    "Collection field) before running across the whole "
+                    "library.\n\nContinue anyway?"
+                )
+            if not messagebox.askyesno("Apply Live Changes?", warning):
+                return
+
+        cfg = FixAuthorsConfig(
+            library_id=library_id,
+            library_type=library_type,
+            api_key=api_key,
+            crossref_mailto=crossref_mailto,
+            dry_run=not live,
+            audit_csv=self.fix_audit_csv_var.get().strip() or "zotero_author_complete_audit.csv",
+            collection_key=collection,
+            crossref_rate_limit_sec=self.fix_rate_limit_var.get(),
+        )
+
+        self.fix_run_button.configure(state="disabled")
+        self.fix_progress.start(10)
+        self._fix_worker_thread = threading.Thread(
+            target=self._run_fix_worker, kwargs=dict(cfg=cfg), daemon=True
+        )
+        self._fix_worker_thread.start()
+
+    def _run_fix_worker(self, cfg: FixAuthorsConfig) -> None:
+        """Runs in a background thread: performs the scan/fix, logs via the queue."""
+        try:
+            result = run_fix_authors(cfg, progress_callback=self._fix_log_queue.put)
+            self._fix_log_queue.put(
+                f"DONE: wrote audit log ({len(result.rows)} rows) to {cfg.audit_csv}"
+            )
+        except ZoteroDepsMissingError as exc:
+            self._fix_log_queue.put(f"ERROR: {exc}")
+        except Exception as exc:  # noqa: BLE001 -- surfaced to the user, not swallowed
+            self._fix_log_queue.put(f"ERROR: fix-authors run failed: {exc}")
+        finally:
+            self._fix_log_queue.put("__FIX_FINISHED__")
+
+    def _poll_fix_queue(self) -> None:
+        """Drain the fix-authors log queue into its log pane; reschedules via after()."""
+        try:
+            while True:
+                msg = self._fix_log_queue.get_nowait()
+                if msg == "__FIX_FINISHED__":
+                    self.fix_run_button.configure(state="normal")
+                    self.fix_progress.stop()
+                    continue
+                self._append_fix_log(msg)
+                if msg.startswith("ERROR:"):
+                    messagebox.showerror("Fix Authors Failed", msg[len("ERROR: ") :])
+        except queue.Empty:
+            pass
+        self.after(100, self._poll_fix_queue)
+
+    def _append_fix_log(self, msg: str) -> None:
+        self.fix_log_text.configure(state="normal")
+        self.fix_log_text.insert("end", msg + "\n")
+        self.fix_log_text.see("end")
+        self.fix_log_text.configure(state="disabled")
 
 
 def main() -> None:

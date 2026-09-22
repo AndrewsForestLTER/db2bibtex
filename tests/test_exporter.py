@@ -304,6 +304,24 @@ def test_config_round_trip(tmp_path):
     assert cfg["trust_server_certificate"] is True
 
 
+def test_save_config_preserves_other_sections(tmp_path):
+    """save_config() must not clobber unrelated sections (e.g. [Zotero]/
+    [CrossRef], written by zotero_author_complete.save_config) already in
+    the same shared db_config.ini file."""
+    config_path = tmp_path / "db_config.ini"
+    cp = configparser.ConfigParser()
+    cp["Zotero"] = {"library_id": "12345", "library_type": "group", "api_key": "zkey"}
+    with open(config_path, "w") as f:
+        cp.write(f)
+
+    exporter.save_config(config_path, server="testserver", database="testdb")
+
+    result = configparser.ConfigParser()
+    result.read(config_path)
+    assert result["Zotero"]["library_id"] == "12345"
+    assert result["Database"]["server"] == "testserver"
+
+
 def test_load_config_missing_file(tmp_path):
     with pytest.raises(FileNotFoundError):
         exporter.load_config(tmp_path / "does_not_exist.ini")

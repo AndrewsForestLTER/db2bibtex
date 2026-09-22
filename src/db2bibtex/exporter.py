@@ -540,6 +540,9 @@ def save_config(
         trust_server_certificate: Written as "yes"/"no".
     """
     cp = configparser.ConfigParser()
+    cp.read(config_path)  # preserve any other sections already in the file
+    # (e.g. [Zotero]/[CrossRef], written by zotero_author_complete.save_config
+    # -- both features can share one db_config.ini)
     cp["Database"] = {
         "server": server or "",
         "database": database or "",

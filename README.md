@@ -113,8 +113,8 @@ db2bibtex-gui
 python -m db2bibtex
 ```
 
-The window has two tabs: **Export** (described above) and **Compare** (see
-below).
+The window has three tabs: **Export** (described above), **Compare**, and
+**Fix Authors** (see below for both).
 
 Fill in Server, Database, and Query file (or **File → Load Config...** for
 Server/Database), check **Use Windows trusted connection** to skip
@@ -122,7 +122,11 @@ username/password, pick a before-year and output path, and click
 **Run Export**. Server, Database, and Query file are all required -- none
 of them default to any particular institution's setup. The export runs on a
 background thread with a progress indicator and a scrolling log. **File →
-Save Config...** warns before writing a plaintext password to disk.
+Load Config...**/**Save Config...** cover all three tabs at once (Database
+credentials and Zotero/CrossRef settings can live in the same `db_config.ini`
+-- each tab's save only touches its own section, so saving from one tab never
+erases another tab's settings). **Save Config...** warns before writing a
+plaintext password and/or Zotero API key to disk.
 
 ## Zotero import notes
 
@@ -175,6 +179,60 @@ Export tab.
 
 Either way, `missing.bib` still needs to be imported into Zotero yourself
 (**File → Import...**) — this tool does not write to Zotero directly.
+
+## Fixing truncated "et al." authors
+
+Some Zotero items end up with a creator list truncated to a literal
+"et al." entry instead of the real authors (e.g. from an import that capped
+the author count). The **fix-authors** feature scans a Zotero library for
+items with that sentinel, looks up the full author list from the item's DOI
+(CrossRef first, DataCite as a fallback), and replaces the creator list in
+place -- every other field (tags, collections, notes, Extra, attachments,
+relations, version) is left untouched. This feature writes directly to your
+live Zotero library via its API and is completely independent of the
+export/compare features above -- it doesn't touch the SQL Server database or
+either `.bib` workflow.
+
+It needs a Zotero API key (**Settings → Feeds/API** in Zotero) and your
+library ID, plus an email address for CrossRef's ["polite pool"](https://api.crossref.org/swagger-ui/index.html)
+(faster, more reliable lookups). Add these to `db_config.ini` (same file as
+the database config, see `db_config.ini.example`):
+
+```ini
+[Zotero]
+library_id = your_zotero_library_id_here
+library_type = group_or_user
+api_key = your_zotero_api_key_here
+
+[CrossRef]
+mailto = your_email@example.org
+```
+
+**Dry-run by default** -- no changes are written to Zotero unless you pass
+`--live` (CLI) or check **Apply changes live** (GUI). Every item scanned is
+written to an audit CSV (`item_key, title, doi, old_creators, new_creators,
+status, detail`) whether or not it changed, so review that file before ever
+running live. **Test against one collection first** (`--collection`
+CLI flag / **Collection** GUI field) before running across the whole
+library -- the GUI warns you if you check **Apply changes live** with no
+collection set.
+
+CLI usage:
+
+```bash
+db2bibtex-fix-authors --config db_config.ini --collection ABCD1234
+db2bibtex-fix-authors --config db_config.ini --collection ABCD1234 --live
+db2bibtex-fix-authors --config db_config.ini --live   # whole library, once you trust the results
+```
+
+Run `db2bibtex-fix-authors --help` for the full flag list. If pyzotero/
+`requests` aren't installed, install the extra: `pip install -e ".[zotero]"`.
+
+The GUI's **Fix Authors** tab offers the same fields (Library ID, Library
+type, API key, CrossRef mailto, optional Collection, Audit CSV output) plus
+an **Apply changes live** checkbox (unchecked = dry-run) and a
+**Scan & Fix Authors** button, running on a background thread with the same
+log/error handling as the other tabs.
 
 ## Tests
 
