@@ -293,14 +293,29 @@ def find_incomplete_items(zot, collection_key: str | None) -> list[dict]:
     return [it for it in items if is_incomplete(it["data"].get("creators", []))]
 
 
+def _creator_display_name(c: dict) -> str:
+    """Full display name for one creator, firstName included.
+
+    is_incomplete() can flag an item because of a sentinel hiding in
+    firstName alone ("Cynthia S. et al"/lastName "Brown") -- audit_csv's
+    old_creators column has to show firstName too, or a reviewer checking
+    *why* an item was flagged (the whole point of the dry-run audit trail)
+    sees a clean-looking lastName-only list with no visible evidence.
+    """
+    name = (c.get("name") or "").strip()
+    if name:
+        return name
+    first = (c.get("firstName") or "").strip()
+    last = (c.get("lastName") or "").strip()
+    return f"{first} {last}".strip() if first else last
+
+
 def process_item(zot, item: dict, cfg: Config) -> AuditRow:
     """Look up and (unless dry_run) apply the full-replace creator fix for one item."""
     data = item["data"]
     title = data.get("title", "")[:80]
     key = data["key"]
-    old_creators_str = "; ".join(
-        c.get("lastName") or c.get("name", "") for c in data.get("creators", [])
-    )
+    old_creators_str = "; ".join(_creator_display_name(c) for c in data.get("creators", []))
 
     doi = get_doi(data)
     if not doi:
@@ -336,7 +351,11 @@ def process_item(zot, item: dict, cfg: Config) -> AuditRow:
 
 
 def write_audit_csv(rows: list[AuditRow], path: str) -> None:
-    with open(path, "w", newline="", encoding="utf-8") as f:
+    # utf-8-sig (UTF-8 + BOM): Excel on Windows -- the natural way to
+    # "review the audit CSV" before trusting --live -- guesses the system
+    # codepage instead of UTF-8 without a BOM, garbling any accented
+    # author name (e.g. "Antão" -> "AntÃ£o").
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(
             ["item_key", "title", "doi", "old_creators", "new_creators", "status", "detail"]

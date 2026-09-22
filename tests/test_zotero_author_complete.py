@@ -363,6 +363,30 @@ def test_process_item_skips_lookup_failed(monkeypatch):
     assert row.doi == "10.1234/abcd"
 
 
+def test_process_item_old_creators_reveals_suffix_hidden_in_first_name(monkeypatch):
+    """The audit CSV's old_creators column is the reviewer's only way to
+    verify *why* an item was flagged before trusting --live -- it must
+    show firstName, not just lastName, or a suffix-only match ("Cynthia
+    S. et al"/lastName "Brown") shows up as a clean-looking name list
+    with no visible evidence for the flag."""
+    monkeypatch.setattr(
+        zac, "fetch_authors_crossref", lambda doi, mailto: [{"given": "Jane", "family": "Smith"}]
+    )
+    item = _item(
+        "ABCX",
+        "Some Title",
+        "10.1234/abcd",
+        [
+            {"firstName": "Elizabeth T.", "lastName": "Borer"},
+            {"firstName": "Cynthia S. et al", "lastName": "Brown"},
+        ],
+    )
+
+    row = zac.process_item(zot=MagicMock(), item=item, cfg=_cfg())
+
+    assert row.old_creators == "Elizabeth T. Borer; Cynthia S. et al Brown"
+
+
 def test_process_item_dry_run_does_not_call_update(monkeypatch):
     monkeypatch.setattr(
         zac, "fetch_authors_crossref", lambda doi, mailto: [{"given": "Jane", "family": "Smith"}]
@@ -462,12 +486,30 @@ def test_write_audit_csv(tmp_path):
 
     zac.write_audit_csv(rows, str(out))
 
-    with open(out, newline="", encoding="utf-8") as f:
+    with open(out, newline="", encoding="utf-8-sig") as f:
         read_rows = list(csv.DictReader(f))
     assert len(read_rows) == 2
     assert read_rows[0]["item_key"] == "A"
     assert read_rows[0]["status"] == "updated"
     assert read_rows[1]["status"] == "skipped-no-doi"
+
+
+def test_write_audit_csv_is_excel_safe_utf8_with_bom(tmp_path):
+    """Excel on Windows -- the natural way to review the audit CSV before
+    trusting --live -- guesses the system codepage instead of UTF-8
+    without a BOM, garbling accented author names (e.g. 'Antão' ->
+    'AntÃ£o'). A UTF-8 BOM makes Excel autodetect it correctly."""
+    rows = [zac.AuditRow("A", "Title", "10.1/a", "Antão; Błażewicz", "New", "updated")]
+    out = tmp_path / "audit.csv"
+
+    zac.write_audit_csv(rows, str(out))
+
+    raw = out.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf"), "expected a UTF-8 BOM at the start of the file"
+
+    with open(out, newline="", encoding="utf-8-sig") as f:
+        read_rows = list(csv.DictReader(f))
+    assert read_rows[0]["old_creators"] == "Antão; Błażewicz"
 
 
 # ---------------------------------------------------------------------------
