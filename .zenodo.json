@@ -1,5 +1,5 @@
 {
-  "title": "db2bibtex: export HJA/LTER publications from SQL Server to BibTeX for Zotero",
+  "title": "db2bibtex: export HJA/LTER publications from SQL Server to BibTeX or RIS for Zotero",
   "upload_type": "software",
   "license": "MIT",
   "creators": [
@@ -9,9 +9,9 @@
       "orcid": "0000-0002-0491-8412"
     }
   ],
-  "keywords": ["BibTeX", "Zotero", "SQL Server", "bibliography", "LTER", "data management"],
+  "keywords": ["BibTeX", "RIS", "Zotero", "SQL Server", "bibliography", "LTER", "data management"],
   "access_right": "open",
   "grants": [{ "id": "10.13039/100000001::2025755" }],
-  "description": "Exports Published H.J. Andrews Experimental Forest and Long-Term Ecological Research (LTER) publications from a SQL Server publication database to BibTeX, for import into Zotero. Provides both a command-line interface and a tkinter GUI.",
+  "description": "Exports Published H.J. Andrews Experimental Forest and Long-Term Ecological Research (LTER) publications from a SQL Server publication database to BibTeX or RIS, for import into Zotero. Provides command-line interfaces for both formats (db2bibtex, db2ris), a tkinter GUI for the BibTeX workflow, and post-import Zotero API tools to repair truncated author lists and Newspaper/Magazine Articles misclassified as Journal Articles.",
   "notes": "This material is based upon work supported by the H.J. Andrews Experimental Forest and Long Term Ecological Research (LTER) program under the NSF grant LTER8 DEB-2025755."
 }

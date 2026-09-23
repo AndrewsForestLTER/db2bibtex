@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "db2bibtex"
-version = "1.1.0"
+version = "1.2.0"
 description = "Export Published H.J. Andrews Experimental Forest / LTER publications from SQL Server to BibTeX or RIS for Zotero import"
 readme = "README.md"
 license = { text = "MIT" }

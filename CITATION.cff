@@ -1,9 +1,9 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
-title: "db2bibtex: export HJA/LTER publications from SQL Server to BibTeX for Zotero"
+title: "db2bibtex: export HJA/LTER publications from SQL Server to BibTeX or RIS for Zotero"
 type: software
-version: 1.1.0
-date-released: "2026-09-16"
+version: 1.2.0
+date-released: "2026-09-23"
 license: MIT
 repository-code: "https://github.com/AndrewsForestLTER/db2bibtex"
 authors:
@@ -24,15 +24,21 @@ identifiers:
 abstract: >
   Exports Published H.J. Andrews Experimental Forest and Long-Term
   Ecological Research (LTER) publications from a SQL Server publication
-  database to BibTeX, for import into Zotero. Provides both a
-  command-line interface and a tkinter GUI. Table and column names are
-  configured via a user-supplied query file (query.sql), not hardcoded,
-  so the tool can be adapted to other institutions' schemas. This
-  material is based upon work supported by the H.J. Andrews Experimental
-  Forest and Long Term Ecological Research (LTER) program under the NSF
-  grant LTER8 DEB-2025755.
+  database to BibTeX or RIS, for import into Zotero. Provides a
+  command-line interface for each format (db2bibtex, db2ris) plus a
+  tkinter GUI for the BibTeX workflow, tools to reconcile a database
+  export against an existing Zotero library, and post-import Zotero API
+  tools to repair truncated author lists and Newspaper/Magazine Articles
+  misclassified as Journal Articles (a limitation of BibTeX's single
+  @article entry type that RIS's distinct JOUR/MGZN/NEWS types avoid).
+  Table and column names are configured via a user-supplied query file
+  (query.sql), not hardcoded, so the tool can be adapted to other
+  institutions' schemas. This material is based upon work supported by
+  the H.J. Andrews Experimental Forest and Long Term Ecological Research
+  (LTER) program under the NSF grant LTER8 DEB-2025755.
 keywords:
   - BibTeX
+  - RIS
   - Zotero
   - SQL Server
   - bibliography
