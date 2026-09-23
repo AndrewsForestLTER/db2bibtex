@@ -49,7 +49,6 @@ Notes on design decisions:
 
 from __future__ import annotations
 
-import configparser
 import re
 import sys
 from dataclasses import dataclass, field
@@ -57,24 +56,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from db2bibtex.db import (
+    ANDREWS_FOREST_BASE_URL,
+    DEFAULT_DRIVER,
+    PyodbcMissingError,
+    QueryFileMissingError,
+    build_conn_str,
+    build_source_note,
+    get_field as _get,
+    load_config,
+    load_query,
+    match_reference_type,
+    resolve_pdf_and_url,
+    save_config,
+    split_authors_list,
+)
+
 try:
     import pyodbc
 except ImportError:
     pyodbc = None
-
-
-class PyodbcMissingError(RuntimeError):
-    """Raised when a database operation is attempted but pyodbc is unavailable."""
-
-
-class QueryFileMissingError(FileNotFoundError):
-    """Raised when the SQL query file cannot be found.
-
-    Subclasses FileNotFoundError so existing ``except FileNotFoundError``
-    handlers still catch it, while carrying a message actionable enough to
-    show directly to a user (CLI stderr or a GUI message box) instead of a
-    bare traceback.
-    """
 
 
 # ---------------------------------------------------------------------------
@@ -116,44 +117,16 @@ BIBTEX_SPECIAL_CHARS = {
     "^": r"\textasciicircum{}",
 }
 
-DEFAULT_DRIVER = "ODBC Driver 18 for SQL Server"
-
-ANDREWS_FOREST_BASE_URL = "https://andrewsforest.oregonstate.edu"
-
 # The real query (real table/column names, real project-ID filters) lives in
 # an external, gitignored query.sql file -- never in this module -- so the
 # internal database schema isn't published alongside the public source. See
-# query.sql.example for the expected shape and load_query() below for how
-# it's read in (at call time, not import time, since the file won't exist
+# query.sql.example for the expected shape and db2bibtex.db.load_query() for
+# how it's read in (at call time, not import time, since the file won't exist
 # in a fresh clone or in CI). There's deliberately no default path or
 # database name baked in here -- both must be supplied explicitly (CLI
 # flags / GUI fields), so the public codebase never assumes any particular
-# institution's file layout or database naming.
-
-
-def load_query(query_file: "str | Path") -> str:
-    """Load the SQL query text from an external file.
-
-    Args:
-        query_file: Path to the SQL file (e.g. "query.sql", after copying
-            and adapting query.sql.example).
-
-    Returns:
-        The file's contents as a string.
-
-    Raises:
-        QueryFileMissingError: If the file doesn't exist, with guidance on
-            how to create it.
-    """
-    path = Path(query_file)
-    if not path.exists():
-        raise QueryFileMissingError(
-            f"Query file not found: {path}\n"
-            "Copy query.sql.example to query.sql (or pass --query-file / use "
-            "the Query File field) and adapt it to your database's table and "
-            "column names before running db2bibtex."
-        )
-    return path.read_text(encoding="utf-8")
+# institution's file layout or database naming. db2ris's ris_export.py reads
+# this exact same query.sql -- both formats need the same source columns.
 
 
 def escape_bibtex(value: Any) -> str:
@@ -178,15 +151,15 @@ def split_authors(raw: Optional[str]) -> str:
     Args:
         raw: Raw author string, e.g. "Cooper, G. M.//Lattin, John D.".
             The publication table delimits multiple authors with '//'.
-            ';' and newline are kept as fallback delimiters.
+            ';' and newline are kept as fallback delimiters (see
+            db2bibtex.db.split_authors_list for the actual parsing --
+            db2ris's ris_export.py uses the same list, one AU line per
+            author, instead of joining it into one string).
 
     Returns:
         Authors joined with ' and ', or "" if raw is empty.
     """
-    if not raw:
-        return ""
-    parts = [p.strip() for p in re.split(r"\s*//\s*|;\s*|\n", raw) if p.strip()]
-    return " and ".join(parts)
+    return " and ".join(split_authors_list(raw))
 
 
 def guess_entry_type(
@@ -205,12 +178,7 @@ def guess_entry_type(
     Returns:
         A BibTeX entry type string, e.g. "article", "incollection".
     """
-    rt = (reference_type or pub_type or "").strip().lower()
-    bib_type = DEFAULT_ENTRY_TYPE
-    for key, mapped in ENTRY_TYPE_MAP.items():
-        if key in rt:
-            bib_type = mapped
-            break
+    bib_type = match_reference_type(reference_type, pub_type, ENTRY_TYPE_MAP) or DEFAULT_ENTRY_TYPE
 
     if bib_type == "phdthesis" and type_of_work:
         if "master" in type_of_work.strip().lower():
@@ -265,13 +233,6 @@ def make_cite_key(
         i += 1
     used_keys.add(key)
     return key
-
-
-def _get(row: Any, name: str) -> Any:
-    """Fetch a field from a pyodbc.Row or a plain mapping (for tests)."""
-    if isinstance(row, dict):
-        return row.get(name)
-    return getattr(row, name)
 
 
 def build_bibtex_entry(row: Any, used_keys: set) -> str:
@@ -357,54 +318,30 @@ def build_bibtex_entry(row: Any, used_keys: set) -> str:
     if abstract:
         fields["abstract"] = escape_bibtex(abstract)
 
-    # PDF link, in priority order:
-    #   1. online_pdf, verbatim, if the source column has a stored URL
-    #   2. else, if the pdf flag column is set, the URL derived from
-    #      pub_number using the same convention the Drupal publications
-    #      detail page uses (dbo.publication.pdf is a 'T'/'F' flag there,
-    #      not a URL -- the page builds
-    #      "https://andrewsforest.oregonstate.edu/pubs/pdf/pub<pub_number>.pdf"
-    #      itself when the flag is true; online_pdf frequently isn't
-    #      populated even though a PDF exists at that address)
-    # -> written to `pdf` (Zotero auto-attaches on full URI).
-    #
-    # `url` is kept separate from `pdf` on purpose: when a PDF link is
-    # available, url points at the publications detail page
-    # (.../publications/<pub_number>) instead of the raw PDF, so clicking
-    # the item's URL in Zotero takes the user to the catalog record rather
-    # than straight to a downloaded file. online_linkage is used only when
-    # there's no PDF at all -- there's no detail page to send them to
-    # without a pub_number-bearing PDF link.
+    # PDF/URL resolution rules are shared with ris_export.py -- see
+    # db2bibtex.db.resolve_pdf_and_url's docstring. `pdf` is what Zotero's
+    # BibTeX import translator auto-attaches (any value containing "://").
     pub_number = _get(row, "pub_number")
-    online_linkage = _get(row, "online_linkage")
-    online_pdf = _get(row, "online_pdf")
-    pdf_flag = _get(row, "pdf")
-    pdf_link = None
-    if online_pdf:
-        pdf_link = online_pdf.strip()
-    elif pub_number and str(pdf_flag).strip().upper() in ("T", "TRUE", "1"):
-        pdf_link = f"{ANDREWS_FOREST_BASE_URL}/pubs/pdf/pub{pub_number}.pdf"
-
+    pdf_link, url = resolve_pdf_and_url(
+        pub_number,
+        _get(row, "online_linkage"),
+        _get(row, "online_pdf"),
+        _get(row, "pdf"),
+    )
     if pdf_link:
         fields["pdf"] = pdf_link
-        if pub_number:
-            fields["url"] = f"{ANDREWS_FOREST_BASE_URL}/publications/{pub_number}"
-        elif online_linkage:
-            fields["url"] = online_linkage.strip()
-    elif online_linkage:
-        fields["url"] = online_linkage.strip()
+    if url:
+        fields["url"] = url
 
-    notes = _get(row, "notes")
-    publication_id = _get(row, "publication_id")
-    catalog_id = _get(row, "catalog_id")
-    note_parts = []
-    if notes:
-        note_parts.append(f"Notes: {notes.strip()}")
-    note_parts.append(
-        f"Source DB: publication_id {publication_id}; "
-        f"pub_number {pub_number}; catalog_id {catalog_id}"
+    # Note text is shared with ris_export.py's N1 field -- both land in a
+    # Zotero child note, and db2bibtex.zotero_item_type_fix relies on this
+    # exact "Source DB: publication_id ..." text to match a Zotero item
+    # back to its source row regardless of which exporter produced it.
+    fields["note"] = escape_bibtex(
+        build_source_note(
+            _get(row, "notes"), _get(row, "publication_id"), pub_number, _get(row, "catalog_id")
+        )
     )
-    fields["note"] = escape_bibtex("; ".join(note_parts))
 
     # keywords -> imports as a Zotero tag, so pub_number is
     # filterable/searchable via the tag selector.
@@ -462,16 +399,9 @@ def fetch_rows(
         )
 
     query = load_query(query_file)
-
-    parts = [f"DRIVER={{{driver}}}", f"SERVER={server}", f"DATABASE={database}"]
-    if trusted_connection:
-        parts.append("Trusted_Connection=yes")
-    else:
-        parts.append(f"UID={uid}")
-        parts.append(f"PWD={pwd}")
-    parts.append(f"Encrypt={'yes' if encrypt else 'no'}")
-    parts.append(f"TrustServerCertificate={'yes' if trust_server_certificate else 'no'}")
-    conn_str = ";".join(parts) + ";"
+    conn_str = build_conn_str(
+        driver, server, database, trusted_connection, uid, pwd, encrypt, trust_server_certificate
+    )
 
     conn = pyodbc.connect(conn_str)
     try:
@@ -480,79 +410,6 @@ def fetch_rows(
         return cursor.fetchall()
     finally:
         conn.close()
-
-
-def load_config(config_path: "str | Path") -> dict:
-    """Read connection settings from an .ini file.
-
-    Args:
-        config_path: Path to a db_config.ini-style file with [Database]
-            and [Driver] sections (see db_config.ini.example).
-
-    Returns:
-        A dict with keys: server, database, uid, pwd, driver,
-        trust_server_certificate.
-    """
-    cp = configparser.ConfigParser()
-    read_files = cp.read(config_path)
-    if not read_files:
-        raise FileNotFoundError(f"Could not read config file: {config_path}")
-
-    db = cp["Database"] if cp.has_section("Database") else {}
-    drv = cp["Driver"] if cp.has_section("Driver") else {}
-
-    driver = drv.get("driver", DEFAULT_DRIVER).strip("{}")
-
-    return {
-        "server": db.get("server"),
-        "database": db.get("database"),
-        "uid": db.get("username"),
-        "pwd": db.get("password"),
-        "driver": driver,
-        "trust_server_certificate": cp.getboolean(
-            "Database", "trustservercertificate", fallback=True
-        )
-        if cp.has_section("Database")
-        else True,
-    }
-
-
-def save_config(
-    config_path: "str | Path",
-    server: str,
-    database: str,
-    driver: str = DEFAULT_DRIVER,
-    uid: Optional[str] = None,
-    pwd: Optional[str] = None,
-    trust_server_certificate: bool = True,
-) -> None:
-    """Write connection settings to an .ini file in db_config.ini format.
-
-    Args:
-        config_path: Destination path.
-        server: SQL Server hostname/instance.
-        database: Database name.
-        driver: ODBC driver name.
-        uid: SQL auth username, if any.
-        pwd: SQL auth password, if any. Written in plaintext -- callers
-            (e.g. the GUI) should warn the user before invoking this with
-            a real password.
-        trust_server_certificate: Written as "yes"/"no".
-    """
-    cp = configparser.ConfigParser()
-    cp.read(config_path)  # preserve any other sections already in the file
-    # (e.g. [Zotero]/[CrossRef], written by zotero_author_complete.save_config
-    # -- both features can share one db_config.ini)
-    cp["Database"] = {
-        "server": server or "",
-        "database": database or "",
-        "username": uid or "",
-        "password": pwd or "",
-        "trustservercertificate": "yes" if trust_server_certificate else "no",
-    }
-    cp["Driver"] = {"driver": f"{{{driver}}}" if driver else f"{{{DEFAULT_DRIVER}}}"}
-    with open(config_path, "w", encoding="utf-8") as fh:
-        cp.write(fh)
 
 
 @dataclass

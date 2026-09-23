@@ -3,8 +3,9 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22800301.svg)](https://doi.org/10.5281/zenodo.22800301)
 
 Export Published H.J. Andrews Experimental Forest / LTER publications from a
-SQL Server database to a BibTeX (`.bib`) file for import into
-[Zotero](https://www.zotero.org/). Ships as both a CLI and a tkinter GUI.
+SQL Server database to a BibTeX (`.bib`) or RIS (`.ris`) file for import into
+[Zotero](https://www.zotero.org/). BibTeX export ships as both a CLI and a
+tkinter GUI; RIS export (`db2ris` -- see below) is CLI-only for now.
 
 ## What it does
 
@@ -35,6 +36,46 @@ file with:
 - BibTeX special characters (`& % $ # _ { } ~ ^`) escaped in free-text fields
 - Records missing a title or author skipped and reported, not silently
   dropped
+
+## db2ris -- an alternative to BibTeX
+
+BibTeX has no `@newspaper` or `@magazine` entry type -- `@article` is the
+only periodical type the format defines -- so the BibTeX export above has
+to map Journal, Magazine, and Newspaper articles all to the same `article`
+type, and Zotero's BibTeX-import translator then turns every one of those
+into item type "Journal Article" on import, with no way to tell them apart
+afterward. This was confirmed against Zotero's actual translator source
+(`RIS.js`/`BibTeX.js`), not just the format specs.
+
+RIS defines distinct type codes for all three (`JOUR`/`MGZN`/`NEWS`), and
+Zotero's RIS-import translator imports them as distinct item types
+(Journal/Magazine/Newspaper Article) -- also confirmed against the real
+translator source. `db2ris` is a second exporter, in this same package,
+that reads the exact same `query.sql` and `db_config.ini` as `db2bibtex`
+and produces a `.ris` file instead. It also recovers a few other item
+types BibTeX has no equivalent for at all (Audiovisual Material -> `film`,
+Computer Program -> `computerProgram`, Map -> `map`), which fall back to
+"misc" in the BibTeX export.
+
+No extra setup: same config, same query file, same import flow (Zotero:
+**File → Import...** → select the `.ris` file → **RIS**). The
+`fix-authors`/`fix-item-types` tools above work unchanged on a
+`db2ris`-imported library too -- they match a Zotero item back to its
+source row via a child note's `publication_id` text, and that note gets
+created the same way regardless of which exporter produced it.
+
+`db2ris` is CLI-only for now (no GUI tab yet, mirroring how `db2bibtex`
+itself started as CLI-only):
+
+```bash
+db2ris --config db_config.ini --query-file query.sql --before-year 2026 --output publications.ris
+```
+
+Same flags as `db2bibtex` throughout (`--server`, `--database`, `--driver`,
+`--uid`/`--pwd`/`--trusted`, `--before-year`, `--query-file`) -- run
+`db2ris --help` for the full list. If `reference_type` values differ from
+what's guessed here, edit `RIS_TYPE_MAP` in `src/db2bibtex/ris_export.py`
+the same way you'd edit `ENTRY_TYPE_MAP` for the BibTeX exporter.
 
 ## Installation
 
@@ -236,6 +277,62 @@ type, API key, CrossRef mailto, optional Collection, Audit output path) plus
 an **Apply changes live** checkbox (unchecked = dry-run) and a
 **Scan & Fix Authors** button, running on a background thread with the same
 log/error handling as the other tabs.
+
+## Fixing misclassified Newspaper/Magazine articles
+
+BibTeX has no `@newspaper` or `@magazine` entry type — `@article` is the
+only periodical type the format defines. `db2bibtex`'s exporter therefore
+maps `Journal Article`, `Magazine Article`, and `Newspaper Article`
+`reference_type` values all to BibTeX's `article` type, and Zotero's
+BibTeX-import translator unconditionally turns every `@article` into item
+type "Journal Article" on import, regardless of what's actually in the
+journal/publisher field (e.g. a Seattle Times piece imports as "Journal
+Article" with journal = "The Seattle Times"). This is a real limitation of
+the BibTeX round trip, not a bug in the `reference_type` mapping.
+
+The **fix-item-types** feature scans an already-imported Zotero library for
+"Journal Article" items, looks up each one's real `reference_type` back in
+the source database (matched via the `publication_id` embedded in the
+child note Zotero's BibTeX import creates from the exporter's `note`
+field — *not* the `keywords` tag, for the same mixed-vintage-library
+reason described above), and converts just the ones that are really
+Newspaper or Magazine articles to the correct Zotero item type in place.
+Every field the new type still supports is carried over unchanged; it also
+backfills the newspaper `section` field from the database's `news_section`
+column, which db2bibtex's BibTeX export doesn't currently carry through at
+all. Like fix-authors, this writes directly to your live Zotero library via
+its API and doesn't touch either `.bib` workflow.
+
+It needs both the `[Zotero]` settings (same as fix-authors, above) and the
+`[Database]`/`[Driver]` settings (same as the main export, see
+Configuration) in the same `db_config.ini`. It also needs its own lookup
+query file: copy `query_item_type_lookup.sql.example` to
+`query_item_type_lookup.sql` and adapt the table/column names to your
+schema (same convention as `query.sql`; gitignored, never committed).
+
+**Dry-run by default** — no changes are written to Zotero unless you pass
+`--live`. Every item checked is written to an audit workbook (`item_key,
+title, old_item_type, new_item_type, publication_id, status, detail`)
+whether or not it changed, so review that file before ever running live.
+
+**Test against one collection first** (`--collection`) before running
+across the whole library — this isn't just a safety precaution here: the
+tool has to scan *every* note in scope (library-wide, or just the
+collection) to find each item's `publication_id`, since that identifier
+lives in a child note rather than anywhere searchable/filterable via the
+Zotero API. On a large library this full-library note scan can take
+several minutes (tens of thousands of notes at ~100/page); scoping to a
+collection makes it near-instant.
+
+CLI usage:
+
+```bash
+db2bibtex-fix-item-types --config db_config.ini --collection ABCD1234
+db2bibtex-fix-item-types --config db_config.ini --collection ABCD1234 --live
+db2bibtex-fix-item-types --config db_config.ini --live   # whole library, once you trust the results
+```
+
+Run `db2bibtex-fix-item-types --help` for the full flag list.
 
 ## Tests
 

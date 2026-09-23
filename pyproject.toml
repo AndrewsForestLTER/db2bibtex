@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "db2bibtex"
 version = "1.1.0"
-description = "Export Published H.J. Andrews Experimental Forest / LTER publications from SQL Server to BibTeX for Zotero import"
+description = "Export Published H.J. Andrews Experimental Forest / LTER publications from SQL Server to BibTeX or RIS for Zotero import"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Adam Kennedy", email = "adam.kennedy@oregonstate.edu" }]
@@ -20,6 +20,8 @@ zotero = ["pyzotero>=1.5", "requests>=2.31", "openpyxl>=3.1"]
 db2bibtex = "db2bibtex.cli:main"
 db2bibtex-compare = "db2bibtex.compare_cli:main"
 db2bibtex-fix-authors = "db2bibtex.zotero_author_complete_cli:main"
+db2bibtex-fix-item-types = "db2bibtex.zotero_item_type_fix_cli:main"
+db2ris = "db2bibtex.ris_cli:main"
 
 [project.gui-scripts]
 db2bibtex-gui = "db2bibtex.gui:main"
