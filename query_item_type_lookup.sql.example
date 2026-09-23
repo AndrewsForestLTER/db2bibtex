@@ -1,0 +1,22 @@
+-- ============================================================
+-- query_item_type_lookup.sql.example
+--
+-- Template for db2bibtex-fix-item-types' source-database lookup. Copy this
+-- file to query_item_type_lookup.sql (gitignored, matches the `query_*.sql`
+-- pattern used elsewhere in this repo) and adapt the table/column names to
+-- your own database schema.
+--
+-- Must select exactly these four columns (aliased as shown) and contain
+-- exactly one `{ph}` placeholder in the WHERE clause -- the tool fills it
+-- with the right number of `?` parameter markers for however many
+-- publication_ids it needs to look up in one round trip.
+-- ============================================================
+
+SELECT
+    pub.[id_column]              AS publication_id,
+    pub.[type_column]            AS pub_type,
+    pub.[reference_type_column]  AS reference_type,
+    pub.[place_published_column] AS place_published,
+    pub.[news_section_column]    AS news_section
+FROM [your_database].[schema].[publications_table] pub
+WHERE pub.[id_column] IN ({ph})

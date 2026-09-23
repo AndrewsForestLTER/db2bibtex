@@ -23,6 +23,10 @@ from db2bibtex.zotero_author_complete import ZoteroDepsMissingError
 from db2bibtex.zotero_author_complete import load_config as load_zotero_config
 from db2bibtex.zotero_author_complete import run as run_fix_authors
 from db2bibtex.zotero_author_complete import save_config as save_zotero_config
+from db2bibtex.zotero_item_type_fix import Config as FixItemTypesConfig
+from db2bibtex.zotero_item_type_fix import DEFAULT_QUERY_FILE as ITEM_TYPE_DEFAULT_QUERY_FILE
+from db2bibtex.zotero_item_type_fix import ZoteroDepsMissingError as ItemTypeZoteroDepsMissingError
+from db2bibtex.zotero_item_type_fix import run as run_fix_item_types
 
 ABOUT_TEXT = (
     "db2bibtex {version}\n\n"
@@ -51,6 +55,9 @@ class App(tk.Tk):
         self._fix_log_queue: "queue.Queue[str]" = queue.Queue()
         self._fix_worker_thread: threading.Thread | None = None
 
+        self._item_type_log_queue: "queue.Queue[str]" = queue.Queue()
+        self._item_type_worker_thread: threading.Thread | None = None
+
         self.server_var = tk.StringVar()
         self.database_var = tk.StringVar()
         self.driver_var = tk.StringVar(value=DEFAULT_DRIVER)
@@ -76,6 +83,11 @@ class App(tk.Tk):
         self.fix_audit_path_var = tk.StringVar(value="zotero_author_complete_audit.xlsx")
         self.fix_rate_limit_var = tk.DoubleVar(value=0.5)
 
+        self.item_type_query_file_var = tk.StringVar(value=ITEM_TYPE_DEFAULT_QUERY_FILE)
+        self.item_type_collection_var = tk.StringVar()
+        self.item_type_live_var = tk.BooleanVar(value=False)
+        self.item_type_audit_path_var = tk.StringVar(value="zotero_item_type_fix_audit.xlsx")
+
         self._build_menu()
 
         self.notebook = ttk.Notebook(self)
@@ -98,16 +110,26 @@ class App(tk.Tk):
         self.fix_tab.rowconfigure(1, weight=1)
         self.notebook.add(self.fix_tab, text="Fix Authors")
 
+        self.item_type_tab = ttk.Frame(self.notebook)
+        self.item_type_tab.columnconfigure(0, weight=1)
+        self.item_type_tab.rowconfigure(1, weight=1)
+        self.notebook.add(self.item_type_tab, text="Fix Item Types")
+
         self._build_export_form()
         self._build_export_log_pane()
         self._build_compare_form()
         self._build_compare_log_pane()
         self._build_fix_form()
         self._build_fix_log_pane()
+        self._build_item_type_form()
+        self._build_item_type_log_pane()
+
+        self.on_trusted_toggle()
 
         self.after(100, self._poll_queue)
         self.after(100, self._poll_compare_queue)
         self.after(100, self._poll_fix_queue)
+        self.after(100, self._poll_item_type_queue)
 
     # ------------------------------------------------------------------
     # Construction
@@ -200,8 +222,6 @@ class App(tk.Tk):
         self.progress.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(5, 0))
 
         frame.columnconfigure(1, weight=1)
-
-        self.on_trusted_toggle()
 
     def _build_export_log_pane(self) -> None:
         log_frame = ttk.Frame(self.export_tab, padding=(10, 0, 10, 10))
@@ -361,18 +381,177 @@ class App(tk.Tk):
         self.fix_log_text.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+    def _build_item_type_form(self) -> None:
+        """Database and Zotero fields here share the same tk.Variables as
+        the Export and Fix Authors tabs (Server/Database/Driver/trusted/
+        username/password, Library ID/type/API key) -- one Load/Save Config
+        keeps every tab in sync, same as the other tabs already do for their
+        own overlapping fields."""
+        frame = ttk.Frame(self.item_type_tab, padding=10)
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        row = 0
+        ttk.Label(frame, text="Server").grid(row=row, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.server_var, width=40).grid(row=row, column=1, sticky="ew")
+        row += 1
+
+        ttk.Label(frame, text="Database").grid(row=row, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.database_var, width=40).grid(row=row, column=1, sticky="ew")
+        row += 1
+
+        ttk.Label(frame, text="Driver").grid(row=row, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.driver_var, width=40).grid(row=row, column=1, sticky="ew")
+        row += 1
+
+        ttk.Label(frame, text="Lookup query file").grid(row=row, column=0, sticky="w")
+        qf_frame = ttk.Frame(frame)
+        qf_frame.grid(row=row, column=1, sticky="ew")
+        ttk.Entry(qf_frame, textvariable=self.item_type_query_file_var, width=32).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(qf_frame, text="Browse...", command=self.on_browse_item_type_query_file).pack(
+            side="left"
+        )
+        row += 1
+
+        self.item_type_trusted_check = ttk.Checkbutton(
+            frame,
+            text="Use Windows trusted connection",
+            variable=self.trusted_var,
+            command=self.on_trusted_toggle,
+        )
+        self.item_type_trusted_check.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        ttk.Label(frame, text="Username").grid(row=row, column=0, sticky="w")
+        self.item_type_username_entry = ttk.Entry(frame, textvariable=self.username_var, width=40)
+        self.item_type_username_entry.grid(row=row, column=1, sticky="ew")
+        row += 1
+
+        ttk.Label(frame, text="Password").grid(row=row, column=0, sticky="w")
+        pw_frame = ttk.Frame(frame)
+        pw_frame.grid(row=row, column=1, sticky="ew")
+        self.item_type_password_entry = ttk.Entry(
+            pw_frame, textvariable=self.password_var, show="*", width=32
+        )
+        self.item_type_password_entry.pack(side="left", fill="x", expand=True)
+        ttk.Checkbutton(
+            pw_frame, text="Show", variable=self.show_password_var, command=self.on_show_password_toggle
+        ).pack(side="left")
+        row += 1
+
+        ttk.Separator(frame, orient="horizontal").grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=6
+        )
+        row += 1
+
+        ttk.Label(frame, text="Zotero library ID").grid(row=row, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.zotero_library_id_var, width=40).grid(
+            row=row, column=1, sticky="ew"
+        )
+        row += 1
+
+        ttk.Label(frame, text="Library type").grid(row=row, column=0, sticky="w")
+        ttk.Combobox(
+            frame,
+            textvariable=self.zotero_library_type_var,
+            values=["group", "user"],
+            state="readonly",
+            width=10,
+        ).grid(row=row, column=1, sticky="w")
+        row += 1
+
+        ttk.Label(frame, text="Zotero API key").grid(row=row, column=0, sticky="w")
+        api_key_frame = ttk.Frame(frame)
+        api_key_frame.grid(row=row, column=1, sticky="ew")
+        self.item_type_api_key_entry = ttk.Entry(
+            api_key_frame, textvariable=self.zotero_api_key_var, show="*", width=32
+        )
+        self.item_type_api_key_entry.pack(side="left", fill="x", expand=True)
+        ttk.Checkbutton(
+            api_key_frame, text="Show", variable=self.show_api_key_var, command=self.on_show_api_key_toggle
+        ).pack(side="left")
+        row += 1
+
+        ttk.Separator(frame, orient="horizontal").grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=6
+        )
+        row += 1
+
+        ttk.Label(frame, text="Collection (optional)").grid(row=row, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.item_type_collection_var, width=40).grid(
+            row=row, column=1, sticky="ew"
+        )
+        row += 1
+        ttk.Label(
+            frame,
+            text="Recommended for a first run: restrict to one collection before the whole "
+            "library. Without one, this has to scan every note in the library to match "
+            "items back to the source database, which can take several minutes.",
+            font=("TkDefaultFont", 8),
+            foreground="gray40",
+            wraplength=420,
+            justify="left",
+        ).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        ttk.Label(frame, text="Audit output (.xlsx)").grid(row=row, column=0, sticky="w")
+        audit_frame = ttk.Frame(frame)
+        audit_frame.grid(row=row, column=1, sticky="ew")
+        ttk.Entry(audit_frame, textvariable=self.item_type_audit_path_var, width=32).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(audit_frame, text="Browse...", command=self.on_browse_item_type_audit_path).pack(
+            side="left"
+        )
+        row += 1
+
+        ttk.Checkbutton(
+            frame,
+            text="Apply changes live (default: dry-run, no writes to Zotero)",
+            variable=self.item_type_live_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        self.item_type_run_button = ttk.Button(
+            frame, text="Scan & Fix Item Types", command=self.on_run_fix_item_types
+        )
+        self.item_type_run_button.grid(row=row, column=0, columnspan=2, pady=(10, 0))
+        row += 1
+
+        self.item_type_progress = ttk.Progressbar(frame, mode="indeterminate")
+        self.item_type_progress.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+
+        frame.columnconfigure(1, weight=1)
+
+    def _build_item_type_log_pane(self) -> None:
+        log_frame = ttk.Frame(self.item_type_tab, padding=(10, 0, 10, 10))
+        log_frame.grid(row=1, column=0, sticky="nsew")
+
+        self.item_type_log_text = tk.Text(log_frame, height=10, state="disabled", wrap="word")
+        scrollbar = ttk.Scrollbar(log_frame, command=self.item_type_log_text.yview)
+        self.item_type_log_text.configure(yscrollcommand=scrollbar.set)
+        self.item_type_log_text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
     # ------------------------------------------------------------------
     # Interactive logic -- Export tab
     # ------------------------------------------------------------------
     def on_trusted_toggle(self) -> None:
-        """Enable/disable username+password fields based on trusted-connection state."""
+        """Enable/disable username+password fields (Export and Fix Item
+        Types tabs both show them, bound to the same shared variables)
+        based on trusted-connection state."""
         state = "disabled" if self.trusted_var.get() else "normal"
         self.username_entry.configure(state=state)
         self.password_entry.configure(state=state)
+        self.item_type_username_entry.configure(state=state)
+        self.item_type_password_entry.configure(state=state)
 
     def on_show_password_toggle(self) -> None:
-        """Toggle password field masking."""
-        self.password_entry.configure(show="" if self.show_password_var.get() else "*")
+        """Toggle password field masking on every tab showing it."""
+        show = "" if self.show_password_var.get() else "*"
+        self.password_entry.configure(show=show)
+        self.item_type_password_entry.configure(show=show)
 
     def on_browse_output(self) -> None:
         path = filedialog.asksaveasfilename(
@@ -665,8 +844,10 @@ class App(tk.Tk):
     # Interactive logic -- Fix Authors tab
     # ------------------------------------------------------------------
     def on_show_api_key_toggle(self) -> None:
-        """Toggle Zotero API key field masking."""
-        self.api_key_entry.configure(show="" if self.show_api_key_var.get() else "*")
+        """Toggle Zotero API key field masking on every tab showing it."""
+        show = "" if self.show_api_key_var.get() else "*"
+        self.api_key_entry.configure(show=show)
+        self.item_type_api_key_entry.configure(show=show)
 
     def on_browse_audit_path(self) -> None:
         path = filedialog.asksaveasfilename(
@@ -778,6 +959,149 @@ class App(tk.Tk):
         self.fix_log_text.insert("end", msg + "\n")
         self.fix_log_text.see("end")
         self.fix_log_text.configure(state="disabled")
+
+    # ------------------------------------------------------------------
+    # Interactive logic -- Fix Item Types tab
+    # ------------------------------------------------------------------
+    def on_browse_item_type_query_file(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[("SQL files", "*.sql"), ("All files", "*.*")],
+            initialfile=self.item_type_query_file_var.get(),
+        )
+        if path:
+            self.item_type_query_file_var.set(path)
+
+    def on_browse_item_type_audit_path(self) -> None:
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel workbook", "*.xlsx"), ("All files", "*.*")],
+            initialfile=self.item_type_audit_path_var.get(),
+        )
+        if path:
+            self.item_type_audit_path_var.set(path)
+
+    def on_run_fix_item_types(self) -> None:
+        """Validate inputs and launch the fix-item-types scan on a background thread."""
+        server = self.server_var.get().strip()
+        if not server:
+            messagebox.showerror("Missing Server", "Please enter a database server.")
+            return
+
+        database = self.database_var.get().strip()
+        if not database:
+            messagebox.showerror("Missing Database", "Please enter a database name.")
+            return
+
+        query_file = self.item_type_query_file_var.get().strip() or ITEM_TYPE_DEFAULT_QUERY_FILE
+
+        library_id = self.zotero_library_id_var.get().strip()
+        if not library_id:
+            messagebox.showerror("Missing Library ID", "Please enter a Zotero library ID.")
+            return
+
+        library_type = self.zotero_library_type_var.get().strip()
+        if not library_type:
+            messagebox.showerror("Missing Library Type", "Please choose a library type.")
+            return
+
+        api_key = self.zotero_api_key_var.get().strip()
+        if not api_key:
+            messagebox.showerror("Missing API Key", "Please enter a Zotero API key.")
+            return
+
+        if self._item_type_worker_thread and self._item_type_worker_thread.is_alive():
+            messagebox.showwarning("Scan Running", "A fix-item-types scan is already in progress.")
+            return
+
+        collection = self.item_type_collection_var.get().strip() or None
+        live = self.item_type_live_var.get()
+
+        if live:
+            if collection:
+                warning = (
+                    "This will write changes to your live Zotero library "
+                    f"(collection {collection}).\n\nContinue?"
+                )
+            else:
+                warning = (
+                    "This will write changes across your ENTIRE live Zotero "
+                    "library -- no collection restriction is set.\n\n"
+                    "Recommended: test on one collection first (fill in the "
+                    "Collection field) before running across the whole "
+                    "library.\n\nContinue anyway?"
+                )
+            if not messagebox.askyesno("Apply Live Changes?", warning):
+                return
+        elif not collection:
+            self._append_item_type_log(
+                "Note: no collection set -- this dry-run will scan the whole library "
+                "and can take several minutes."
+            )
+
+        trusted = self.trusted_var.get()
+        cfg = FixItemTypesConfig(
+            library_id=library_id,
+            library_type=library_type,
+            api_key=api_key,
+            server=server,
+            database=database,
+            driver=self.driver_var.get().strip() or DEFAULT_DRIVER,
+            uid=None if trusted else self.username_var.get().strip(),
+            pwd=None if trusted else self.password_var.get(),
+            trusted_connection=trusted,
+            trust_server_certificate=True,
+            query_file=query_file,
+            dry_run=not live,
+            audit_path=self.item_type_audit_path_var.get().strip() or "zotero_item_type_fix_audit.xlsx",
+            collection_key=collection,
+        )
+
+        self.item_type_run_button.configure(state="disabled")
+        self.item_type_progress.start(10)
+        self._item_type_worker_thread = threading.Thread(
+            target=self._run_item_type_worker, kwargs=dict(cfg=cfg), daemon=True
+        )
+        self._item_type_worker_thread.start()
+
+    def _run_item_type_worker(self, cfg: FixItemTypesConfig) -> None:
+        """Runs in a background thread: performs the scan/fix, logs via the queue."""
+        try:
+            result = run_fix_item_types(cfg, progress_callback=self._item_type_log_queue.put)
+            self._item_type_log_queue.put(
+                f"DONE: wrote audit log ({len(result.rows)} rows) to {cfg.audit_path}"
+            )
+        except ItemTypeZoteroDepsMissingError as exc:
+            self._item_type_log_queue.put(f"ERROR: {exc}")
+        except PyodbcMissingError as exc:
+            self._item_type_log_queue.put(f"ERROR: {exc}")
+        except QueryFileMissingError as exc:
+            self._item_type_log_queue.put(f"ERROR: {exc}")
+        except Exception as exc:  # noqa: BLE001 -- surfaced to the user, not swallowed
+            self._item_type_log_queue.put(f"ERROR: fix-item-types run failed: {exc}")
+        finally:
+            self._item_type_log_queue.put("__ITEM_TYPE_FINISHED__")
+
+    def _poll_item_type_queue(self) -> None:
+        """Drain the fix-item-types log queue into its log pane; reschedules via after()."""
+        try:
+            while True:
+                msg = self._item_type_log_queue.get_nowait()
+                if msg == "__ITEM_TYPE_FINISHED__":
+                    self.item_type_run_button.configure(state="normal")
+                    self.item_type_progress.stop()
+                    continue
+                self._append_item_type_log(msg)
+                if msg.startswith("ERROR:"):
+                    messagebox.showerror("Fix Item Types Failed", msg[len("ERROR: ") :])
+        except queue.Empty:
+            pass
+        self.after(100, self._poll_item_type_queue)
+
+    def _append_item_type_log(self, msg: str) -> None:
+        self.item_type_log_text.configure(state="normal")
+        self.item_type_log_text.insert("end", msg + "\n")
+        self.item_type_log_text.see("end")
+        self.item_type_log_text.configure(state="disabled")
 
 
 def main() -> None:

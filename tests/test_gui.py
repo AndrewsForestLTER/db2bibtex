@@ -16,6 +16,9 @@ import pytest
 from db2bibtex import gui as gui_module
 from db2bibtex.exporter import ExportResult, PyodbcMissingError, QueryFileMissingError
 from db2bibtex.zotero_author_complete import AuditRow, RunResult, ZoteroDepsMissingError
+from db2bibtex.zotero_item_type_fix import AuditRow as ItemTypeAuditRow
+from db2bibtex.zotero_item_type_fix import RunResult as ItemTypeRunResult
+from db2bibtex.zotero_item_type_fix import ZoteroDepsMissingError as ItemTypeZoteroDepsMissingError
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"),
@@ -32,25 +35,35 @@ def app():
 
 
 def test_trusted_toggle_disables_credentials(app):
+    """Export and Fix Item Types tabs share the same username/password
+    variables -- toggling trusted-connection must disable/enable both
+    tabs' entry widgets together."""
     app.trusted_var.set(True)
     app.on_trusted_toggle()
     assert str(app.username_entry.cget("state")) == "disabled"
     assert str(app.password_entry.cget("state")) == "disabled"
+    assert str(app.item_type_username_entry.cget("state")) == "disabled"
+    assert str(app.item_type_password_entry.cget("state")) == "disabled"
 
     app.trusted_var.set(False)
     app.on_trusted_toggle()
     assert str(app.username_entry.cget("state")) == "normal"
     assert str(app.password_entry.cget("state")) == "normal"
+    assert str(app.item_type_username_entry.cget("state")) == "normal"
+    assert str(app.item_type_password_entry.cget("state")) == "normal"
 
 
 def test_password_visibility_toggle(app):
     assert app.password_entry.cget("show") == "*"
+    assert app.item_type_password_entry.cget("show") == "*"
     app.show_password_var.set(True)
     app.on_show_password_toggle()
     assert app.password_entry.cget("show") == ""
+    assert app.item_type_password_entry.cget("show") == ""
     app.show_password_var.set(False)
     app.on_show_password_toggle()
     assert app.password_entry.cget("show") == "*"
+    assert app.item_type_password_entry.cget("show") == "*"
 
 
 def test_config_load_save_round_trip(app, tmp_path):
@@ -243,9 +256,9 @@ def test_run_export_missing_query_file_shows_friendly_error(app, tmp_path):
     assert not any("Traceback" in msg for msg in drained)
 
 
-def test_notebook_has_export_compare_and_fix_authors_tabs(app):
+def test_notebook_has_all_four_tabs(app):
     tab_texts = [app.notebook.tab(tab_id, "text") for tab_id in app.notebook.tabs()]
-    assert tab_texts == ["Export", "Compare", "Fix Authors"]
+    assert tab_texts == ["Export", "Compare", "Fix Authors", "Fix Item Types"]
 
 
 def test_browse_backup_sets_field(app, tmp_path):
@@ -354,12 +367,15 @@ def _set_valid_fix_fields(app):
 
 def test_api_key_visibility_toggle(app):
     assert app.api_key_entry.cget("show") == "*"
+    assert app.item_type_api_key_entry.cget("show") == "*"
     app.show_api_key_var.set(True)
     app.on_show_api_key_toggle()
     assert app.api_key_entry.cget("show") == ""
+    assert app.item_type_api_key_entry.cget("show") == ""
     app.show_api_key_var.set(False)
     app.on_show_api_key_toggle()
     assert app.api_key_entry.cget("show") == "*"
+    assert app.item_type_api_key_entry.cget("show") == "*"
 
 
 def test_browse_audit_path_sets_field(app, tmp_path):
@@ -537,3 +553,215 @@ def test_shared_config_round_trip_preserves_both_sections(app, tmp_path):
         assert fresh.crossref_mailto_var.get() == "me@example.org"
     finally:
         fresh.destroy()
+
+
+# ---------------------------------------------------------------------------
+# Fix Item Types tab
+# ---------------------------------------------------------------------------
+
+def _set_valid_item_type_fields(app):
+    app.server_var.set("testserver.example.edu")
+    app.database_var.set("testdb")
+    app.zotero_library_id_var.set("12345")
+    app.zotero_library_type_var.set("group")
+    app.zotero_api_key_var.set("secret-key")
+
+
+def test_item_type_query_file_has_a_default(app):
+    assert app.item_type_query_file_var.get() == gui_module.ITEM_TYPE_DEFAULT_QUERY_FILE
+
+
+def test_browse_item_type_query_file_sets_field(app, tmp_path):
+    picked = tmp_path / "query_item_type_lookup.sql"
+    with patch.object(gui_module.filedialog, "askopenfilename", return_value=str(picked)):
+        app.on_browse_item_type_query_file()
+    assert app.item_type_query_file_var.get() == str(picked)
+
+
+def test_browse_item_type_query_file_cancelled_leaves_field_unchanged(app):
+    original = app.item_type_query_file_var.get()
+    with patch.object(gui_module.filedialog, "askopenfilename", return_value=""):
+        app.on_browse_item_type_query_file()
+    assert app.item_type_query_file_var.get() == original
+
+
+def test_browse_item_type_audit_path_sets_field(app, tmp_path):
+    picked = tmp_path / "custom_audit.xlsx"
+    with patch.object(gui_module.filedialog, "asksaveasfilename", return_value=str(picked)):
+        app.on_browse_item_type_audit_path()
+    assert app.item_type_audit_path_var.get() == str(picked)
+
+
+def test_browse_item_type_audit_path_cancelled_leaves_field_unchanged(app):
+    original = app.item_type_audit_path_var.get()
+    with patch.object(gui_module.filedialog, "asksaveasfilename", return_value=""):
+        app.on_browse_item_type_audit_path()
+    assert app.item_type_audit_path_var.get() == original
+
+
+def test_run_fix_item_types_missing_server_shows_messagebox(app):
+    _set_valid_item_type_fields(app)
+    app.server_var.set("")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_fix_item_types()
+    mock_showerror.assert_called_once()
+    assert app._item_type_worker_thread is None
+
+
+def test_run_fix_item_types_missing_database_shows_messagebox(app):
+    _set_valid_item_type_fields(app)
+    app.database_var.set("")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_fix_item_types()
+    mock_showerror.assert_called_once()
+    assert app._item_type_worker_thread is None
+
+
+def test_run_fix_item_types_missing_library_id_shows_messagebox(app):
+    _set_valid_item_type_fields(app)
+    app.zotero_library_id_var.set("")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_fix_item_types()
+    mock_showerror.assert_called_once()
+    assert app._item_type_worker_thread is None
+
+
+def test_run_fix_item_types_missing_library_type_shows_messagebox(app):
+    _set_valid_item_type_fields(app)
+    app.zotero_library_type_var.set("")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_fix_item_types()
+    mock_showerror.assert_called_once()
+    assert app._item_type_worker_thread is None
+
+
+def test_run_fix_item_types_missing_api_key_shows_messagebox(app):
+    _set_valid_item_type_fields(app)
+    app.zotero_api_key_var.set("")
+    with patch.object(gui_module.messagebox, "showerror") as mock_showerror:
+        app.on_run_fix_item_types()
+    mock_showerror.assert_called_once()
+    assert app._item_type_worker_thread is None
+
+
+def test_run_fix_item_types_dry_run_does_not_prompt_confirmation(app, tmp_path):
+    _set_valid_item_type_fields(app)
+    app.item_type_live_var.set(False)
+    app.item_type_audit_path_var.set(str(tmp_path / "audit.xlsx"))
+    fake_result = ItemTypeRunResult(rows=[], counts={})
+
+    with patch.object(
+        gui_module, "run_fix_item_types", return_value=fake_result
+    ) as mock_run, patch.object(gui_module.messagebox, "askyesno") as mock_askyesno:
+        app.on_run_fix_item_types()
+        assert app._item_type_worker_thread is not None
+        app._item_type_worker_thread.join(timeout=5)
+
+    mock_askyesno.assert_not_called()
+    mock_run.assert_called_once()
+    called_cfg = mock_run.call_args[0][0]
+    assert called_cfg.dry_run is True
+    assert called_cfg.server == "testserver.example.edu"
+    assert called_cfg.database == "testdb"
+
+
+def test_run_fix_item_types_live_without_collection_warns_and_respects_no(app, tmp_path):
+    _set_valid_item_type_fields(app)
+    app.item_type_live_var.set(True)
+    app.item_type_collection_var.set("")
+    app.item_type_audit_path_var.set(str(tmp_path / "audit.xlsx"))
+
+    with patch.object(gui_module, "run_fix_item_types") as mock_run, patch.object(
+        gui_module.messagebox, "askyesno", return_value=False
+    ) as mock_askyesno:
+        app.on_run_fix_item_types()
+
+    mock_askyesno.assert_called_once()
+    mock_run.assert_not_called()
+    assert app._item_type_worker_thread is None
+
+
+def test_run_fix_item_types_live_confirmed_runs(app, tmp_path):
+    _set_valid_item_type_fields(app)
+    app.item_type_live_var.set(True)
+    app.item_type_collection_var.set("COLLKEY")
+    app.item_type_audit_path_var.set(str(tmp_path / "audit.xlsx"))
+    fake_result = ItemTypeRunResult(
+        rows=[ItemTypeAuditRow("A", "Title", "journalArticle", "newspaperArticle", "5378", "updated")],
+        counts={"updated": 1},
+    )
+
+    with patch.object(
+        gui_module, "run_fix_item_types", return_value=fake_result
+    ) as mock_run, patch.object(gui_module.messagebox, "askyesno", return_value=True):
+        app.on_run_fix_item_types()
+        assert app._item_type_worker_thread is not None
+        app._item_type_worker_thread.join(timeout=5)
+
+        drained = []
+        while True:
+            try:
+                drained.append(app._item_type_log_queue.get_nowait())
+            except Exception:
+                break
+
+    mock_run.assert_called_once()
+    called_cfg = mock_run.call_args[0][0]
+    assert called_cfg.dry_run is False
+    assert called_cfg.collection_key == "COLLKEY"
+    assert any("DONE" in m for m in drained)
+
+
+def test_run_fix_item_types_error_path_shows_messagebox(app, tmp_path):
+    _set_valid_item_type_fields(app)
+    app.item_type_audit_path_var.set(str(tmp_path / "audit.xlsx"))
+
+    with patch.object(
+        gui_module,
+        "run_fix_item_types",
+        side_effect=ItemTypeZoteroDepsMissingError("pyzotero unavailable"),
+    ):
+        app.on_run_fix_item_types()
+        assert app._item_type_worker_thread is not None
+        app._item_type_worker_thread.join(timeout=5)
+
+        drained = []
+        while True:
+            try:
+                drained.append(app._item_type_log_queue.get_nowait())
+            except Exception:
+                break
+
+    assert any("pyzotero unavailable" in m for m in drained)
+
+
+def test_run_fix_item_types_already_running_shows_warning(app, tmp_path):
+    _set_valid_item_type_fields(app)
+    app.item_type_audit_path_var.set(str(tmp_path / "audit.xlsx"))
+    app._item_type_worker_thread = MagicMock()
+    app._item_type_worker_thread.is_alive.return_value = True
+
+    with patch.object(gui_module.messagebox, "showwarning") as mock_showwarning:
+        app.on_run_fix_item_types()
+
+    mock_showwarning.assert_called_once()
+
+
+def test_run_fix_item_types_trusted_connection_omits_uid_pwd(app, tmp_path):
+    """When trusted-connection is checked, uid/pwd must not be sent even if
+    the (disabled) fields still hold leftover text."""
+    _set_valid_item_type_fields(app)
+    app.trusted_var.set(True)
+    app.username_var.set("leftover_user")
+    app.password_var.set("leftover_pwd")
+    app.item_type_audit_path_var.set(str(tmp_path / "audit.xlsx"))
+    fake_result = ItemTypeRunResult(rows=[], counts={})
+
+    with patch.object(gui_module, "run_fix_item_types", return_value=fake_result) as mock_run:
+        app.on_run_fix_item_types()
+        app._item_type_worker_thread.join(timeout=5)
+
+    called_cfg = mock_run.call_args[0][0]
+    assert called_cfg.trusted_connection is True
+    assert called_cfg.uid is None
+    assert called_cfg.pwd is None
