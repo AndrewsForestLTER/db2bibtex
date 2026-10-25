@@ -180,6 +180,71 @@ Zotero will:
 - Use the `AND<pub_number>` citation key group as-is (no cite-key collision
   handling needed on Zotero's side, since `db2bibtex` already de-duplicates)
 
+## Syncing the Zotero library with the database (recommended)
+
+`db2bibtex-sync` (and the GUI's **Sync** tab) keeps the Zotero library in
+step with the database directly through the Zotero API. It replaces the
+whole manual refresh cycle: export the library, wipe it, BibTeX import,
+compare, merge duplicates, fix item types, fix authors. No `.bib` file is
+involved, and nothing is ever deleted.
+
+One run:
+
+1. Runs `query.sql` (default `--before-year 2100`, i.e. every year) and
+   scans the whole Zotero library.
+2. Links Zotero items to database records by the `publication_id` in their
+   "Source DB: ..." child note, the same key Compare and fix-item-types use.
+3. Plans one action per record:
+
+   | Status | Meaning |
+   |---|---|
+   | `create` | In the database, not in Zotero. Created with the correct item type (Newspaper/Magazine Article, Book Section, Report, Thesis, ...), its Source DB note, its `pub_number:N` tag and a linked PDF. |
+   | `update` | Linked, but database fields differ. The database wins. Collections, other tags, notes, attachments and relations are kept. |
+   | `adopt` | A Zotero item with no Source DB note whose DOI (or title + year) matches exactly one database record. Updated from that record and given the note, instead of being duplicated. |
+   | `unchanged` | Linked and already matches. |
+   | `zotero-duplicate` | A second Zotero item with the same `publication_id`. Reported; merge it in Zotero. |
+   | `not-in-query` | Linked to a `publication_id` the query no longer returns. Reported, kept. |
+
+   Zotero items with no Source DB note that don't match a record (for
+   example, entries added by hand) are listed on the audit's `zotero_only`
+   sheet and left alone.
+
+4. Writes an audit workbook with four sheets: `actions`, `zotero_only`,
+   `db_duplicates` (database records sharing a DOI or title + year, which
+   Zotero would flag as duplicates; fix them in the source database) and
+   `summary`.
+
+**Field ownership.** Database values overwrite Zotero values, but an empty
+database column never blanks a field someone filled in by hand in Zotero.
+For authors truncated to "et al." in the database, a complete Zotero
+author list is kept; otherwise the full list is looked up by DOI
+(CrossRef, then DataCite), as fix-authors does. Turn that off with
+`--no-fix-authors`.
+
+**Dry run by default.** Nothing is written unless you pass `--live`. Every
+update carries the item version seen during the scan, so an item edited
+in Zotero in the meantime fails with a conflict (shown in the audit)
+rather than being overwritten.
+
+**Empty the Zotero trash first.** The API still returns the notes and
+attachments of trashed items, so after a wipe-and-reimport the scan can
+take 25+ minutes instead of about 4. Orphaned children are ignored for
+matching either way.
+
+It reads `[Database]`, `[Driver]`, `[Zotero]` and `[CrossRef]` from
+`db_config.ini`, and `query.sql` (the same query the export uses).
+
+Quarterly refresh:
+
+```bash
+db2bibtex-sync --config db_config.ini                # dry run; review zotero_sync_audit.xlsx
+db2bibtex-sync --config db_config.ini --live --limit 20   # optional cautious first write
+db2bibtex-sync --config db_config.ini --live
+```
+
+`--collection KEY` puts newly created items in a collection. Run
+`db2bibtex-sync --help` for every flag.
+
 ## Comparing against your Zotero library
 
 A fresh `db2bibtex` export from the database always contains every
