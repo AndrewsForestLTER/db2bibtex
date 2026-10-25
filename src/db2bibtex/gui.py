@@ -27,6 +27,11 @@ from db2bibtex.zotero_item_type_fix import Config as FixItemTypesConfig
 from db2bibtex.zotero_item_type_fix import DEFAULT_QUERY_FILE as ITEM_TYPE_DEFAULT_QUERY_FILE
 from db2bibtex.zotero_item_type_fix import ZoteroDepsMissingError as ItemTypeZoteroDepsMissingError
 from db2bibtex.zotero_item_type_fix import run as run_fix_item_types
+from db2bibtex.zotero_sync import DEFAULT_BEFORE_YEAR as SYNC_DEFAULT_BEFORE_YEAR
+from db2bibtex.zotero_sync import DEFAULT_QUERY_FILE as SYNC_DEFAULT_QUERY_FILE
+from db2bibtex.zotero_sync import Config as SyncConfig
+from db2bibtex.zotero_sync import ZoteroDepsMissingError as SyncZoteroDepsMissingError
+from db2bibtex.zotero_sync import run as run_sync
 
 ABOUT_TEXT = (
     "db2bibtex {version}\n\n"
@@ -58,6 +63,9 @@ class App(tk.Tk):
         self._item_type_log_queue: "queue.Queue[str]" = queue.Queue()
         self._item_type_worker_thread: threading.Thread | None = None
 
+        self._sync_log_queue: "queue.Queue[str]" = queue.Queue()
+        self._sync_worker_thread: threading.Thread | None = None
+
         self.server_var = tk.StringVar()
         self.database_var = tk.StringVar()
         self.driver_var = tk.StringVar(value=DEFAULT_DRIVER)
@@ -88,6 +96,14 @@ class App(tk.Tk):
         self.item_type_live_var = tk.BooleanVar(value=False)
         self.item_type_audit_path_var = tk.StringVar(value="zotero_item_type_fix_audit.xlsx")
 
+        self.sync_query_file_var = tk.StringVar(value=SYNC_DEFAULT_QUERY_FILE)
+        self.sync_before_year_var = tk.IntVar(value=SYNC_DEFAULT_BEFORE_YEAR)
+        self.sync_collection_var = tk.StringVar()
+        self.sync_fix_authors_var = tk.BooleanVar(value=True)
+        self.sync_limit_var = tk.StringVar()
+        self.sync_live_var = tk.BooleanVar(value=False)
+        self.sync_audit_path_var = tk.StringVar(value="zotero_sync_audit.xlsx")
+
         self._build_menu()
 
         self.notebook = ttk.Notebook(self)
@@ -115,6 +131,11 @@ class App(tk.Tk):
         self.item_type_tab.rowconfigure(1, weight=1)
         self.notebook.add(self.item_type_tab, text="Fix Item Types")
 
+        self.sync_tab = ttk.Frame(self.notebook)
+        self.sync_tab.columnconfigure(0, weight=1)
+        self.sync_tab.rowconfigure(1, weight=1)
+        self.notebook.add(self.sync_tab, text="Sync")
+
         self._build_export_form()
         self._build_export_log_pane()
         self._build_compare_form()
@@ -123,6 +144,8 @@ class App(tk.Tk):
         self._build_fix_log_pane()
         self._build_item_type_form()
         self._build_item_type_log_pane()
+        self._build_sync_form()
+        self._build_sync_log_pane()
 
         self.on_trusted_toggle()
 
@@ -130,6 +153,7 @@ class App(tk.Tk):
         self.after(100, self._poll_compare_queue)
         self.after(100, self._poll_fix_queue)
         self.after(100, self._poll_item_type_queue)
+        self.after(100, self._poll_sync_queue)
 
     # ------------------------------------------------------------------
     # Construction
@@ -532,6 +556,91 @@ class App(tk.Tk):
         scrollbar = ttk.Scrollbar(log_frame, command=self.item_type_log_text.yview)
         self.item_type_log_text.configure(yscrollcommand=scrollbar.set)
         self.item_type_log_text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+    def _build_sync_form(self) -> None:
+        """Sync reuses the database and Zotero connection fields from the
+        Export and Fix Authors tabs (same tk.Variables, filled by Load
+        Config) -- only sync-specific options live here."""
+        frame = ttk.Frame(self.sync_tab, padding=10)
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        row = 0
+        ttk.Label(
+            frame,
+            text="Creates missing database records in Zotero with the correct item type, "
+            "updates changed ones (database fields win), adopts matching Zotero-only "
+            "items, and reports the rest. Never deletes anything. Uses the database "
+            "settings from the Export tab and the Zotero settings from the Fix Authors "
+            "tab (File > Load Config fills both).",
+            wraplength=460,
+            justify="left",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        row += 1
+
+        ttk.Label(frame, text="Query file").grid(row=row, column=0, sticky="w")
+        qf_frame = ttk.Frame(frame)
+        qf_frame.grid(row=row, column=1, sticky="ew")
+        ttk.Entry(qf_frame, textvariable=self.sync_query_file_var, width=32).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(qf_frame, text="Browse...", command=self.on_browse_sync_query_file).pack(side="left")
+        row += 1
+
+        ttk.Label(frame, text="Before year").grid(row=row, column=0, sticky="w")
+        ttk.Spinbox(frame, from_=1900, to=2100, textvariable=self.sync_before_year_var, width=8).grid(
+            row=row, column=1, sticky="w"
+        )
+        row += 1
+
+        ttk.Label(frame, text="Collection for new items (optional)").grid(row=row, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.sync_collection_var, width=40).grid(row=row, column=1, sticky="ew")
+        row += 1
+
+        ttk.Label(frame, text="Write at most (optional)").grid(row=row, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.sync_limit_var, width=8).grid(row=row, column=1, sticky="w")
+        row += 1
+
+        ttk.Checkbutton(
+            frame,
+            text="Look up full author lists by DOI for 'et al.' records",
+            variable=self.sync_fix_authors_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        ttk.Label(frame, text="Audit output (.xlsx)").grid(row=row, column=0, sticky="w")
+        audit_frame = ttk.Frame(frame)
+        audit_frame.grid(row=row, column=1, sticky="ew")
+        ttk.Entry(audit_frame, textvariable=self.sync_audit_path_var, width=32).pack(
+            side="left", fill="x", expand=True
+        )
+        ttk.Button(audit_frame, text="Browse...", command=self.on_browse_sync_audit_path).pack(side="left")
+        row += 1
+
+        ttk.Checkbutton(
+            frame,
+            text="Apply changes live (default: dry-run, no writes to Zotero)",
+            variable=self.sync_live_var,
+        ).grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+
+        self.sync_run_button = ttk.Button(frame, text="Sync with Database", command=self.on_run_sync)
+        self.sync_run_button.grid(row=row, column=0, columnspan=2, pady=(10, 0))
+        row += 1
+
+        self.sync_progress = ttk.Progressbar(frame, mode="indeterminate")
+        self.sync_progress.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+
+        frame.columnconfigure(1, weight=1)
+
+    def _build_sync_log_pane(self) -> None:
+        log_frame = ttk.Frame(self.sync_tab, padding=(10, 0, 10, 10))
+        log_frame.grid(row=1, column=0, sticky="nsew")
+
+        self.sync_log_text = tk.Text(log_frame, height=10, state="disabled", wrap="word")
+        scrollbar = ttk.Scrollbar(log_frame, command=self.sync_log_text.yview)
+        self.sync_log_text.configure(yscrollcommand=scrollbar.set)
+        self.sync_log_text.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
     # ------------------------------------------------------------------
@@ -1102,6 +1211,132 @@ class App(tk.Tk):
         self.item_type_log_text.insert("end", msg + "\n")
         self.item_type_log_text.see("end")
         self.item_type_log_text.configure(state="disabled")
+
+
+    # ------------------------------------------------------------------
+    # Interactive logic -- Sync tab
+    # ------------------------------------------------------------------
+    def on_browse_sync_query_file(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[("SQL files", "*.sql"), ("All files", "*.*")],
+            initialfile=self.sync_query_file_var.get(),
+        )
+        if path:
+            self.sync_query_file_var.set(path)
+
+    def on_browse_sync_audit_path(self) -> None:
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel workbook", "*.xlsx"), ("All files", "*.*")],
+            initialfile=self.sync_audit_path_var.get(),
+        )
+        if path:
+            self.sync_audit_path_var.set(path)
+
+    def on_run_sync(self) -> None:
+        """Validate inputs and launch the sync on a background thread."""
+        required = [
+            ("Server", self.server_var.get().strip()),
+            ("Database", self.database_var.get().strip()),
+            ("Zotero library ID", self.zotero_library_id_var.get().strip()),
+            ("Library type", self.zotero_library_type_var.get().strip()),
+            ("Zotero API key", self.zotero_api_key_var.get().strip()),
+        ]
+        missing = [name for name, value in required if not value]
+        if missing:
+            messagebox.showerror(
+                "Missing Settings",
+                f"Missing: {', '.join(missing)}.\n\nFill them in on the Export / Fix Authors "
+                "tabs, or use File > Load Config.",
+            )
+            return
+
+        try:
+            before_year = int(self.sync_before_year_var.get())
+        except (tk.TclError, ValueError):
+            messagebox.showerror("Invalid Year", "Before year must be a whole number.")
+            return
+
+        limit_text = self.sync_limit_var.get().strip()
+        if limit_text and not limit_text.isdigit():
+            messagebox.showerror("Invalid Limit", "Write at most must be a whole number (or empty).")
+            return
+        limit = int(limit_text) if limit_text else None
+
+        if self._sync_worker_thread and self._sync_worker_thread.is_alive():
+            messagebox.showwarning("Sync Running", "A sync is already in progress.")
+            return
+
+        live = self.sync_live_var.get()
+        if live and not messagebox.askyesno(
+            "Apply Live Changes?",
+            "This will create and update items in your live Zotero library"
+            + (f" (at most {limit})" if limit else "")
+            + ".\n\nReview a dry-run audit first. Continue?",
+        ):
+            return
+
+        trusted = self.trusted_var.get()
+        cfg = SyncConfig(
+            library_id=self.zotero_library_id_var.get().strip(),
+            library_type=self.zotero_library_type_var.get().strip(),
+            api_key=self.zotero_api_key_var.get().strip(),
+            server=self.server_var.get().strip(),
+            database=self.database_var.get().strip(),
+            driver=self.driver_var.get().strip() or DEFAULT_DRIVER,
+            uid=None if trusted else self.username_var.get().strip(),
+            pwd=None if trusted else self.password_var.get(),
+            trusted_connection=trusted,
+            query_file=self.sync_query_file_var.get().strip() or SYNC_DEFAULT_QUERY_FILE,
+            before_year=before_year,
+            crossref_mailto=self.crossref_mailto_var.get().strip() or None,
+            fix_authors=self.sync_fix_authors_var.get(),
+            dry_run=not live,
+            audit_path=self.sync_audit_path_var.get().strip() or "zotero_sync_audit.xlsx",
+            collection_key=self.sync_collection_var.get().strip() or None,
+            limit=limit,
+        )
+
+        self.sync_run_button.configure(state="disabled")
+        self.sync_progress.start(10)
+        self._sync_worker_thread = threading.Thread(
+            target=self._run_sync_worker, kwargs=dict(cfg=cfg), daemon=True
+        )
+        self._sync_worker_thread.start()
+
+    def _run_sync_worker(self, cfg: SyncConfig) -> None:
+        """Runs in a background thread: performs the sync, logs via the queue."""
+        try:
+            plan = run_sync(cfg, progress_callback=self._sync_log_queue.put)
+            self._sync_log_queue.put(f"DONE: {plan.counts()} -- audit in {cfg.audit_path}")
+        except (SyncZoteroDepsMissingError, PyodbcMissingError, QueryFileMissingError) as exc:
+            self._sync_log_queue.put(f"ERROR: {exc}")
+        except Exception as exc:  # noqa: BLE001 -- surfaced to the user, not swallowed
+            self._sync_log_queue.put(f"ERROR: sync failed: {exc}")
+        finally:
+            self._sync_log_queue.put("__SYNC_FINISHED__")
+
+    def _poll_sync_queue(self) -> None:
+        """Drain the sync log queue into its log pane; reschedules via after()."""
+        try:
+            while True:
+                msg = self._sync_log_queue.get_nowait()
+                if msg == "__SYNC_FINISHED__":
+                    self.sync_run_button.configure(state="normal")
+                    self.sync_progress.stop()
+                    continue
+                self._append_sync_log(msg)
+                if msg.startswith("ERROR:"):
+                    messagebox.showerror("Sync Failed", msg[len("ERROR: ") :])
+        except queue.Empty:
+            pass
+        self.after(100, self._poll_sync_queue)
+
+    def _append_sync_log(self, msg: str) -> None:
+        self.sync_log_text.configure(state="normal")
+        self.sync_log_text.insert("end", msg + "\n")
+        self.sync_log_text.see("end")
+        self.sync_log_text.configure(state="disabled")
 
 
 def main() -> None:

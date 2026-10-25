@@ -256,9 +256,9 @@ def test_run_export_missing_query_file_shows_friendly_error(app, tmp_path):
     assert not any("Traceback" in msg for msg in drained)
 
 
-def test_notebook_has_all_four_tabs(app):
+def test_notebook_has_all_tabs(app):
     tab_texts = [app.notebook.tab(tab_id, "text") for tab_id in app.notebook.tabs()]
-    assert tab_texts == ["Export", "Compare", "Fix Authors", "Fix Item Types"]
+    assert tab_texts == ["Export", "Compare", "Fix Authors", "Fix Item Types", "Sync"]
 
 
 def test_browse_backup_sets_field(app, tmp_path):
@@ -765,3 +765,68 @@ def test_run_fix_item_types_trusted_connection_omits_uid_pwd(app, tmp_path):
     assert called_cfg.trusted_connection is True
     assert called_cfg.uid is None
     assert called_cfg.pwd is None
+
+
+# ---------------------------------------------------------------------------
+# Sync tab
+# ---------------------------------------------------------------------------
+
+def test_sync_defaults(app):
+    assert app.sync_query_file_var.get() == gui_module.SYNC_DEFAULT_QUERY_FILE
+    assert app.sync_before_year_var.get() == gui_module.SYNC_DEFAULT_BEFORE_YEAR
+    assert app.sync_live_var.get() is False
+    assert app.sync_fix_authors_var.get() is True
+
+
+def test_run_sync_missing_settings_shows_messagebox(app):
+    with patch.object(gui_module.messagebox, "showerror") as mock_err:
+        app.on_run_sync()
+    mock_err.assert_called_once()
+    assert "Server" in mock_err.call_args[0][1]
+    assert app._sync_worker_thread is None
+
+
+def test_run_sync_invalid_limit_shows_messagebox(app):
+    _set_valid_item_type_fields(app)
+    app.sync_limit_var.set("ten")
+    with patch.object(gui_module.messagebox, "showerror") as mock_err:
+        app.on_run_sync()
+    mock_err.assert_called_once()
+    assert app._sync_worker_thread is None
+
+
+def test_run_sync_dry_run_builds_config(app, tmp_path):
+    _set_valid_item_type_fields(app)
+    app.sync_audit_path_var.set(str(tmp_path / "audit.xlsx"))
+    app.sync_limit_var.set("5")
+    app.sync_collection_var.set("COLLKEY")
+    fake_plan = MagicMock()
+    fake_plan.counts.return_value = {"create": 1}
+
+    with patch.object(gui_module, "run_sync", return_value=fake_plan) as mock_run, patch.object(
+        gui_module.messagebox, "askyesno"
+    ) as mock_askyesno:
+        app.on_run_sync()
+        app._sync_worker_thread.join(timeout=5)
+
+    mock_askyesno.assert_not_called()
+    cfg = mock_run.call_args[0][0]
+    assert cfg.dry_run is True
+    assert cfg.limit == 5
+    assert cfg.collection_key == "COLLKEY"
+    assert cfg.server == "testserver.example.edu"
+    drained = []
+    while not app._sync_log_queue.empty():
+        drained.append(app._sync_log_queue.get_nowait())
+    assert any(m.startswith("DONE:") for m in drained)
+
+
+def test_run_sync_live_respects_no(app):
+    _set_valid_item_type_fields(app)
+    app.sync_live_var.set(True)
+    with patch.object(gui_module, "run_sync") as mock_run, patch.object(
+        gui_module.messagebox, "askyesno", return_value=False
+    ):
+        app.on_run_sync()
+    mock_run.assert_not_called()
+    assert app._sync_worker_thread is None
